@@ -40,9 +40,9 @@ def label_data(protocol, data, control_var):
                         for j in range(len(s_tf)-1)])
         # ^ time, protocol, dense
         yp = np.interp(tp, protocol["Time (s)"],  # y, protocol, dense
-                       protocol["λx"])
-        yd = np.interp(tf, data["Time (s)"], data["λx"])  # y, data, dense
-        yf = np.interp(tf, s_tf, protocol["λx"][i0:i1+1])  # y, fit, dense
+                       protocol[control_var])
+        yd = np.interp(tf, data["Time (s)"], data[control_var])  # y, data, dense
+        yf = np.interp(tf, s_tf, protocol[control_var][i0:i1+1])  # y, fit, dense
         r = np.corrcoef(yf, yd)[0,1]
         # r = np.cov(yf, yd)[0,1] / np.cov(yp, yp)[0,0]
         if np.isnan(r):

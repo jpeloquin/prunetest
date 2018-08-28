@@ -364,7 +364,7 @@ class Block(SegmentList):
     def cycles(self):
         n = len(self._isegments) // self.cycle_length
         return [[self.protocol.segments[j]
-                 for j in self._isegments[i:i+self.cycle_length+1]]
+                 for j in self._isegments[2*i:2*i+self.cycle_length]]
                 for i in range(n)]
 
 

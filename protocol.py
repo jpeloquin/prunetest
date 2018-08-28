@@ -240,6 +240,7 @@ class ProtocolData:
             m = np.logical_and(t0 < self.data_times,
                                self.data_times <= t1)
             self.segments[i].data = self.data[m]
+            self.segments[i].times = [t0, t1]
 
 
 class InitialState:

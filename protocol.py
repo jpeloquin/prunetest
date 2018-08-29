@@ -202,7 +202,22 @@ class Protocol:
                 if phase.label in protocol.phase_dict:
                     warnings.warn("Phase label `{}` is not unique.  It will refer to the last phase with this label.".format(phase.label))
                 protocol.phase_dict[phase.label] = phase
+
+        protocol._init_parentage()
+
         return protocol
+
+    def _init_parentage(self):
+        self.phase_of_segment = {}
+        self.phase_of_block = {}
+        for phase in self.phases:
+            for segment in phase.segments:
+                self.phase_of_segment[segment] = phase
+        for block in self.blocks:
+            phase0 = self.phase_of_segment[block.segments[0]]
+            phase1 = self.phase_of_segment[block.segments[-1]]
+            assert phase0 == phase1
+            self.phase_of_block[block] = phase0
 
 
 class ProtocolData:
@@ -225,7 +240,8 @@ class ProtocolData:
         self.change_points = change_points
 
         for k in ['segments', 'blocks', 'phases',
-                  'segment_dict', 'block_dict', 'phase_dict']:
+                  'segment_dict', 'block_dict', 'phase_dict',
+                  'phase_of_block', 'phase_of_segment']:
             self.__dict__[k] = protocol.__dict__[k]
 
         self.data_times = t

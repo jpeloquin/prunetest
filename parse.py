@@ -138,6 +138,7 @@ def strip_blank_lines(lines):
 
 
 def _nested_set(dic, path, value):
+    """Set a value in a dictionary at a path of keys"""
     for k in path[:-1]:
         dic = dic.setdefault(k, {})
     dic[path[-1]] = value

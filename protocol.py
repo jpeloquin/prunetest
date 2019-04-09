@@ -323,7 +323,10 @@ class LinearSegment:
 
     @property
     def duration(self):
-        initial = self.previous.end_state[self.channel]
+        try:
+            initial = self.previous.end_state[self.channel]
+        except KeyError:
+            return 0
         change = self.target - initial
         duration = abs(change) / self.rate
         return duration.to("s").m

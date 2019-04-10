@@ -20,8 +20,11 @@ def label_data(protocol, data, control_var):
     """
     protocol_change_points = np.cumsum([0] + [seg.duration for seg in
                                               protocol.segments])
-    protocol_values = [protocol.initial_state[control_var]] +\
-        [seg.end_state[control_var] for seg in protocol.segments]
+    # TODO: Standardize variable's units to the unit declaration under
+    # Channels section, rather than the first unit encountered.
+    unit = protocol.initial_state[control_var].units
+    protocol_values = [protocol.initial_state[control_var].m] +\
+        [seg.end_state[control_var].to(unit).m for seg in protocol.segments]
     tab_protocol = {"Time (s)": protocol_change_points,
                     control_var: protocol_values}
     time_points = tab_protocol["Time (s)"].copy()

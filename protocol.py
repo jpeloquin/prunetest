@@ -14,10 +14,20 @@ def label_data(protocol, data, control_var):
     The protocol is defined as a table of test segments with at least a
     column named "Time (s)" and a column with name == `control_var`.
 
+    Warning: `protocol` will be mutated to update its initial state to
+    match the control channel's data.  This is necessary for fitting of
+    the first segment.
+
     Future versions of this function will support an arbitrarily large
     number of control variables.
 
     """
+    # TODO: ensure units of data match units of reference state
+    state = protocol.initial_state.end_state
+    state[control_var] = data[control_var].iloc[0] *\
+        protocol.initial_state.end_state[control_var].units
+    protocol.initial_state = InitialState(state)
+    protocol.segments[0].previous = protocol.initial_state
     protocol_change_points = np.cumsum([0] + [seg.duration for seg in
                                               protocol.segments])
     # TODO: Standardize variable's units to the unit declaration under
@@ -31,10 +41,12 @@ def label_data(protocol, data, control_var):
     # ↑ times of change points
     def f(p):
         """Fit quality metric for fitting origin point."""
-        # Time ponts for comparison are drawn from the protocol rather
+        # Time points for comparison are drawn from the protocol rather
         # than the data because we want the number of residuals to
         # remain constant regardless of how much of the test data ends
         # up spanned by the fitted protocol segments.
+
+        # i is meant to refer to variable in the enclosing environment
         if i == 0:
             s_d = p[1:]  # duration, fit, by segment
             i0 = 0
@@ -44,12 +56,12 @@ def label_data(protocol, data, control_var):
             i1 = i + 1
             s_d = p  # duration, fit, by segment
         s_tf = time_points[i0] + np.cumsum(np.hstack([[0], s_d]))
-        # ↑ time, fit, by segment
+        # ^ time, fit, by segment
         s_dp = np.diff(tab_protocol["Time (s)"][i0:i1+1])
-        # ↑ duration, protocol, by segment
+        # ^ duration, protocol, by segment
         tf = np.hstack([np.linspace(s_tf[j], s_tf[j+1], 10)
                         for j in range(len(s_tf)-1)])
-        # ↑ time, fit, dense
+        # ^ time, fit, dense
         tp = np.hstack([np.linspace(tab_protocol["Time (s)"][i0+j],
                                     tab_protocol["Time (s)"][i0+j+1],
                                     10)

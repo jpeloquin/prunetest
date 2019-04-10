@@ -257,6 +257,7 @@ class ProtocolData:
 
         self.data_times = t
         self.data = data
+        self.initial_state = protocol.initial_state
 
         for i in range(len(protocol.segments)):
             # i = index of first change point for current segment

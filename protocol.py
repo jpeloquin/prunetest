@@ -95,8 +95,9 @@ def label_data(protocol, data, control_var):
         else:
             p0 = np.diff(tab_protocol["Time (s)"][i-1:i+2])
         # print("\ni = {}".format(i))
-        # bounds = [(0, np.inf) for x in p0]  # BFGS can't use bounds
-        result = minimize(f, p0, method="BFGS")
+        bounds = [(0, np.inf) for x in p0]
+        result = minimize(f, p0, method="L-BFGS-B",
+                          bounds=bounds)
         time_points[i] = time_points[max([0, i-1])] + result['x'][0]
     labeled = ProtocolData(data, data["Time (s)"], protocol, time_points)
     return labeled

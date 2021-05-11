@@ -40,7 +40,7 @@ def parse_protocol(lines):
         elif ln.startswith("|"):
             channel, target = ln.lstrip("| ").strip().split("→")
             channel = channel.strip()
-            target = ureg.parse_expression(target.strip())
+            target = ureg.Quantity(ureg.parse_expression(target.strip()))
             protocol.append(("segment", {"channel": channel,
                                          "target": target}))
         elif ln == '' or ln.isspace():
@@ -121,7 +121,7 @@ def read_reference_state(lines):
                          '\s*=\s*'
                          '(?P<value>[\s\S]+)',
                          ln)
-            value = ureg.parse_expression(m.group('value'))
+            value = ureg.Quantity(ureg.parse_expression(m.group('value')))
             reference_values[m.group('var')] = value
     return reference_values
 

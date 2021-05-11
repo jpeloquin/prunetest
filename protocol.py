@@ -12,7 +12,7 @@ def label_data(protocol, data, control_var):
     """Label a table of test data based on a protocol.
 
     The protocol is defined as a table of test segments with at least a
-    column named "Time (s)" and a column with name == `control_var`.
+    column named "Time [s]" and a column with name == `control_var`.
 
     Warning: `protocol` will be mutated to update its initial state to
     match the control channel's data.  This is necessary for fitting of
@@ -35,9 +35,9 @@ def label_data(protocol, data, control_var):
     unit = protocol.initial_state[control_var].units
     protocol_values = [protocol.initial_state[control_var].m] +\
         [seg.end_state[control_var].to(unit).m for seg in protocol.segments]
-    tab_protocol = {"Time (s)": protocol_change_points,
+    tab_protocol = {"Time [s]": protocol_change_points,
                     control_var: protocol_values}
-    time_points = tab_protocol["Time (s)"].copy()
+    time_points = tab_protocol["Time [s]"].copy()
     # ↑ times of change points
     def f(p):
         """Fit quality metric for fitting origin point."""
@@ -57,19 +57,19 @@ def label_data(protocol, data, control_var):
             s_d = p  # duration, fit, by segment
         s_tf = time_points[i0] + np.cumsum(np.hstack([[0], s_d]))
         # ^ time, fit, by segment
-        s_dp = np.diff(tab_protocol["Time (s)"][i0:i1+1])
+        s_dp = np.diff(tab_protocol["Time [s]"][i0:i1+1])
         # ^ duration, protocol, by segment
         tf = np.hstack([np.linspace(s_tf[j], s_tf[j+1], 10)
                         for j in range(len(s_tf)-1)])
         # ^ time, fit, dense
-        tp = np.hstack([np.linspace(tab_protocol["Time (s)"][i0+j],
-                                    tab_protocol["Time (s)"][i0+j+1],
+        tp = np.hstack([np.linspace(tab_protocol["Time [s]"][i0+j],
+                                    tab_protocol["Time [s]"][i0+j+1],
                                     10)
                         for j in range(len(s_tf)-1)])
         # ↑ time, protocol, dense
-        yp = np.interp(tp, tab_protocol["Time (s)"],  # y, protocol, dense
+        yp = np.interp(tp, tab_protocol["Time [s]"],  # y, protocol, dense
                        tab_protocol[control_var])
-        yd = np.interp(tf, data["Time (s)"], data[control_var])  # y, data, dense
+        yd = np.interp(tf, data["Time [s]"], data[control_var])  # y, data, dense
         yf = np.interp(tf, s_tf, tab_protocol[control_var][i0:i1+1])  # y, fit, dense
         r = np.corrcoef(yf, yd)[0,1]
         # r = np.cov(yf, yd)[0,1] / np.cov(yp, yp)[0,0]
@@ -89,17 +89,17 @@ def label_data(protocol, data, control_var):
         # stdout.write("r = {:.4f}  penalty = {:.4f}  ".format(r, penalty))
         # print("p = {}".format(p))
         return -r + penalty
-    for i in range(len(tab_protocol["Time (s)"])):
+    for i in range(len(tab_protocol["Time [s]"])):
         if i == 0:
             p0 = np.hstack([[0], np.diff(time_points[i:i+3])])
         else:
-            p0 = np.diff(tab_protocol["Time (s)"][i-1:i+2])
+            p0 = np.diff(tab_protocol["Time [s]"][i-1:i+2])
         # print("\ni = {}".format(i))
         bounds = [(0, np.inf) for x in p0]
         result = minimize(f, p0, method="L-BFGS-B",
                           bounds=bounds)
         time_points[i] = time_points[max([0, i-1])] + result['x'][0]
-    labeled = ProtocolData(data, data["Time (s)"], protocol, time_points)
+    labeled = ProtocolData(data, data["Time [s]"], protocol, time_points)
     return labeled
 
 

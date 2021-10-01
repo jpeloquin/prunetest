@@ -134,7 +134,7 @@ def read_prune(p):
     iprotocol = parse.parse_protocol(sections["protocol"])
     # Read protocol
     defaults = {}
-    defaults['rates'] = parse.read_default_rates(sections['declarations']['default interpolation'])
+    defaults['rates'] = parse.read_default_rates(sections['declarations'].get('default interpolation', []))
     reference_state = parse.read_reference_state(sections['declarations']['initialization'])
     protocol = read_parsed_protocol(iprotocol, reference_state, defaults)
     return protocol

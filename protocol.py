@@ -1,4 +1,5 @@
 # Base packages
+import pathlib
 from collections import OrderedDict
 import sys
 import warnings
@@ -104,9 +105,15 @@ def label_data(protocol, data, control_var):
     return labeled
 
 
-def read_prune(fobj):
+def read_prune(p):
     """Read a file object as a prunetest protocol."""
-    lines = fobj.readlines()
+    if isinstance(p, str) or isinstance(p, pathlib.Path):
+        # Assume p is a path
+        with open(p, "r") as f:
+            lines = f.readlines()
+    else:
+        # Assume p is an object that supports line-oriented IO
+        lines = p.readlines()
     # Read metadata
     metadata = {}
     in_metadata = True

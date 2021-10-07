@@ -1,7 +1,70 @@
 # Base packages
 import re
 # Local packages
+from collections import UserString
+from enum import Enum, auto
+
 from .unit import ureg
+
+
+class BinOp:
+    def __init__(self, op, lval, rval):
+        self.op = op
+        self.lval = lval
+        self.rval = rval
+
+
+class Token:
+    def __init__(self, v):
+        self.v = v
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.v!r})"
+
+
+class Number(Token):
+    pass
+
+
+class Operator(Token):
+    pass
+
+
+class Unit(Token):
+    pass
+
+
+class Symbol(Token):
+    pass
+
+
+class NumericValue:
+    def __init__(self, num, unit=Unit("1")):
+        self.num = num
+        self.unit = unit
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.num}, {self.unit!r})"
+
+
+class SymbolicValue:
+    def __init__(self, symbol, op=None):
+        self.symbol = symbol
+        self.operator = op
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.operator or ''}{self.symbol})"
+
+
+operators = ("+", "-", "−", "/", "*", "×", "^")
+re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
+re_un_op = re.compile(r"^-")
+re_unit = re.compile(f"^[^{''.join(operators)}]" + r"\w·/\-*°]+")
+re_sym = re.compile(r"^\w+")
+re_ws = re.compile(r"^\s+")
+
+re_num = re.compile(r"-?(\d*\.)?\d+")
+
 
 def expand_blocks(elements):
     expanded = []
@@ -22,7 +85,93 @@ def expand_blocks(elements):
     return expanded
 
 
+def parse_expression(s):
+    """Return syntax tree for expression"""
+    i = 0
+
+    def match_binary_op():
+        nonlocal i
+        if m := re_bin_op.match(s[i:]):
+            i += m.end()
+            return Operator(m.group())
+
+    def match_group():
+        nonlocal i
+        if s[i] == "(":
+            # Open group
+            i += 1
+            j = s[i:].find(")")
+            if j == -1:
+                raise ValueError(f"Unmatched open parenthesis.  Next 10 characters after unmatch parenthesis were: {s[i:i+10]}")
+            group = parse_expression(s[i:j])
+            i = i + j + 1
+            return group
+
+    def match_number():
+        nonlocal i
+        if m := re_num.match(s[i:]):
+            i += m.end()
+            return Number(m.group())
+
+    def match_unary_op():
+        nonlocal i
+        if m := re_un_op.match(s[i:]):
+            i += m.end()
+            return m.group()
+
+    def match_unit():
+        nonlocal i
+        if m := re_unit.match(s[i:]):
+            i += m.end()
+            return Unit(m.group())
+
+    def match_symbol():
+        nonlocal i
+        if m := re_sym.match(s[i:]):
+            i += m.end()
+            return Symbol(m.group())
+
+    def match_ws():
+        nonlocal i
+        if m := re_ws.match(s[i:]):
+            i += m.end()
+            return m.group()
+
+    def match_value():
+        nonlocal i
+        if num := match_number():
+            match_ws()
+            if unit := match_unit():
+                return NumericValue(num, unit)
+            else:
+                return NumericValue(num)
+        if un := match_unary_op():
+            # No whitespace may separate the unary operator and its operand
+            if sym := match_symbol():
+                return SymbolicValue(sym, op=un)
+            else:
+                raise ValueError(f"Unary operator `{un}` was not followed by a symbolic reference.  The remaining characters in the problem line were: '{s[i:]}'")
+        if sym := match_symbol():
+            return SymbolicValue(sym)
+
+    stream = []
+    while i < len(s):
+        match_ws()
+        if group := match_group():
+            stream.append(tuple(group))
+            continue
+        if value := match_value():
+            stream.append(value)
+            continue
+        if binary := match_binary_op():
+            stream.append(Operator(binary))
+            continue
+        raise ValueError(f"Could not interpret {s[i:]}")
+    return stream
+
+
 def parse_protocol(lines):
+    """Return list of elements from content of PROTOCOL section"""
     protocol = []  # list of ([children], kind, {param: value}) tuples.
     for i, ln in enumerate(lines):
         ## Phase
@@ -119,9 +268,11 @@ def read_reference_state(lines):
         if not _is_blank(ln):
             m = re.match(r'(?P<var>\w+)'
                          '\s*=\s*'
-                         '(?P<value>[\s\S]+)',
+                         '(?P<expr>[\s\S]+)',
                          ln)
-            value = ureg.Quantity(ureg.parse_expression(m.group('value')))
+            tokens = parse_expression(m.group("expr"))
+            value = tokens[0]
+            value = ureg.Quantity(value.num.v, value.unit.v)
             reference_values[m.group('var')] = value
     return reference_values
 

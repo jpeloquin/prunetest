@@ -106,7 +106,11 @@ def label_data(protocol, data, control_var):
 
 
 def read_prune(p):
-    """Read a file object as a prunetest protocol."""
+    """Read a file as a prunetest protocol
+
+    :param p: File path or a file-like object with a readlines method.
+
+    """
     if isinstance(p, str) or isinstance(p, pathlib.Path):
         # Assume p is a path
         with open(p, "r") as f:
@@ -131,16 +135,23 @@ def read_prune(p):
     # Read headers and enclosed data
     sections = parse.parse_sections(lines[i:], offset=i)
     # Parse protocol
-    iprotocol = parse.parse_protocol(sections["protocol"])
+    p_protocol = parse.parse_protocol_section(sections["protocol"])
     # Read protocol
     defaults = {}
     defaults['rates'] = parse.read_default_rates(sections['declarations'].get('default interpolation', []))
     reference_state = parse.read_reference_state(sections['declarations']['initialization'])
-    protocol = read_parsed_protocol(iprotocol, reference_state, defaults)
+    protocol = read_parsed_protocol(p_protocol, reference_state, defaults)
     return protocol
 
 
 def read_parsed_protocol(elements, reference_state, defaults=None):
+    """Return Protocol object
+
+    read_parsed_protocol exists as a distinct function from
+    parse.parse_protocol because constructing the Protocol object also
+    requires the reference state and any defaults to be available.
+
+    """
     elements = parse.expand_blocks(elements)
     i = 0  # next segment index (0-indexed)
     segments = []
@@ -181,7 +192,7 @@ def read_parsed_protocol(elements, reference_state, defaults=None):
 
 
 def segment_from_intermediate(struct, previous=None):
-    """Return appropriate segment object for intermediate representation."""
+    """Return a segment object from intermediate representation."""
     if struct[1]['channel'] == 'Δ.t':
         return HoldSegment.from_intermediate(struct, previous)
     elif struct[1]['channel'] == 't':

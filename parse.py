@@ -3,15 +3,10 @@ import re
 # Local packages
 from collections import UserString
 from enum import Enum, auto
+from warnings import warn
+from typing import Optional
 
 from .unit import ureg
-
-
-class BinOp:
-    def __init__(self, op, lval, rval):
-        self.op = op
-        self.lval = lval
-        self.rval = rval
 
 
 class Token:
@@ -20,6 +15,33 @@ class Token:
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.v!r})"
+
+
+class Comment(Token):
+    regex = re.compile("^#")
+
+    @classmethod
+    def match(self, s: str) -> Optional[str]:
+        if s.startswith("#"):
+            return s[1:].lstrip()
+
+
+class Segment:
+    """Parse data for Segment definition"""
+    def __init__(self, statements):
+        self.statements = statements
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.statements!r})"
+
+
+# Classes for parsing expressions
+
+class BinOp:
+    def __init__(self, op, lval, rval):
+        self.op = op
+        self.lval = lval
+        self.rval = rval
 
 
 class Number(Token):
@@ -35,7 +57,13 @@ class Unit(Token):
 
 
 class Symbol(Token):
-    pass
+    regex = re.compile(r"^\w+")
+
+    @classmethod
+    def match(self, s: str) -> Optional[str]:
+        """Return matching start of string or None"""
+        if m := self.regex.match(s):
+            return m.group()
 
 
 class NumericValue:
@@ -59,14 +87,53 @@ class SymbolicValue:
 operators = ("+", "-", "−", "/", "*", "×", "^")
 re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
 re_un_op = re.compile(r"^-")
+
+trans_op = ("→", "->")
+re_trans = re.compile(r"^→|->")
+
 re_unit = re.compile(f"^[^{''.join(operators)}]" + r"\w·/\-*°]+")
-re_sym = re.compile(r"^\w+")
+
 re_ws = re.compile(r"^\s+")
 
 re_num = re.compile(r"-?(\d*\.)?\d+")
 
 
+# Classes for parsing protocol statements
+
+class Transition:
+    """Store parse data for a transition statement, e.g., t → 1 s"""
+    def __init__(self, variable, target: "Target", interpolant=None):
+        self.variable = variable
+        self.target = target
+        # The default interpolant at the model layer should be linear,
+        # but since this class is just parse data, we store what we
+        # found.
+        self.interpolant = interpolant
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.variable} → {self.target})"
+
+
+class Target:
+    def __init__(self, target):
+        self.target = target
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.target})"
+
+
+class AbsoluteTarget(Target):
+    pass
+
+
+class RelativeTarget(Target):
+    pass
+
+
+## Parsing functions
+
 def expand_blocks(elements):
+    """Expand blocks of cycles to individual segments"""
     expanded = []
     active = []
     for e in reversed(elements):
@@ -87,7 +154,7 @@ def expand_blocks(elements):
 
 def parse_expression(s):
     """Return syntax tree for expression"""
-    i = 0
+    i = 0  # character index; if ≥ len(s), must return immediately
 
     def match_binary_op():
         nonlocal i
@@ -127,9 +194,9 @@ def parse_expression(s):
 
     def match_symbol():
         nonlocal i
-        if m := re_sym.match(s[i:]):
-            i += m.end()
-            return Symbol(m.group())
+        if m := Symbol.match(s[i:]):
+            i += len(m)
+            return Symbol(m)
 
     def match_ws():
         nonlocal i
@@ -170,32 +237,106 @@ def parse_expression(s):
     return stream
 
 
-def parse_protocol(lines):
-    """Return list of elements from content of PROTOCOL section"""
+def parse_protocol_section(lines):
+    """Return list of elements from content of the protocol section"""
+    i = 0  # index of next line to match; if ≥ len(lines), return immediately
+
+    def match_segment():
+        """Match segment definition & advance line number"""
+        nonlocal i
+        if lines[i].startswith("|"):
+            statements = []
+            # Make sure opening line has a valid statement
+            if statement := match_transition(lines[i][1:]):
+                statements.append(statement)
+                i += 1
+            else:
+                raise ValueError(f"The following line is a segment definition but does not contain a valid transition statement: '{lines[i]}'")
+            # Collect subsequent lines belonging to the same segment
+            while i < len(lines):
+                if statement := match_transition(lines[i]):
+                    statements.append(statement)
+                    i += 1
+                else:
+                    break
+            # still in `if lines[i].startswith("|")`
+            return Segment(statements)
+
+    def match_transition(s: str) -> Optional[str]:
+        """Match transition statement & advance line number"""
+        i = 0
+
+        def consume_ws(s):
+            nonlocal i
+            if m := re_ws.match(s):
+                i += m.end()
+
+        # Symbol
+        consume_ws(s[i:])
+        if m := Symbol.match(s[i:]):
+            var = m
+            i += len(m)
+        else:
+            return None
+        # Transition operator
+        consume_ws(s[i:])
+        if m := re_trans.match(s[i:]):
+            i += m.end()
+        else:
+            return None
+        # Flag for relative change
+        consume_ws(s[i:])
+        if s[i:i+1] == "+":
+            relative = True
+            i += 1
+        else:
+            relative = False
+        # Target
+        consume_ws(s[i:])
+        if m := parse_expression(s[i:]):
+            expr = m
+            i += len(expr)
+        else:
+            return None
+        if relative:
+            target = RelativeTarget(expr)
+        else:
+            target = AbsoluteTarget(expr)
+        return Transition(var, target)
+
     protocol = []  # list of ([children], kind, {param: value}) tuples.
-    for i, ln in enumerate(lines):
-        ## Phase
+    while i < len(lines):
+        ln = lines[i]
+        # Phase
         if ln.startswith("phase"):
             kw, lbl = ln.strip().split()
             lbl = lbl.strip('"')
             element = ("phase", {"label": lbl})
             protocol.append(element)
-        ## Block
-        elif ln.startswith("repeat"):
+            i += 1
+            continue
+        # Block
+        if ln.startswith("repeat"):
             kw, count = ln.strip().split(",")
             n = int(count.rstrip("cycles").strip())
             protocol.append(("block", {"n": n}))
-        ## Segment
-        elif ln.startswith("|"):
-            channel, target = ln.lstrip("| ").strip().split("→")
-            channel = channel.strip()
-            target = ureg.Quantity(ureg.parse_expression(target.strip()))
-            protocol.append(("segment", {"channel": channel,
-                                         "target": target}))
-        elif ln == '' or ln.isspace():
-            ## Blank line separator.  These are important to preserve
-            ## because they terminate blocks.
+            i += 1
+            continue
+        # Segment
+        if m := match_segment():
+            # match_segment increments the line number
+            protocol.append(m)
+            i += 1
+            continue
+        # Blank line separator.  These are important to preserve # because they #
+        # terminate blocks.
+        if re_ws.match(lines[i]) or lines[i] == "":
             protocol.append(("sep",))
+            i += 1
+            continue
+        # Unrecognized
+        warn(f"Did not recognize syntax of line: {lines[i]}")
+        i += 1
     return protocol
 
 

@@ -2,11 +2,14 @@
 from collections import OrderedDict
 import sys
 import warnings
+
 # Third-party packages
 import numpy as np
 from scipy.optimize import minimize
+
 # Local packages
 from .unit import ureg
+
 
 def label_data(protocol, data, control_var):
     """Label a table of test data based on a protocol.
@@ -24,19 +27,21 @@ def label_data(protocol, data, control_var):
     """
     # TODO: ensure units of data match units of reference state
     state = protocol.initial_state.end_state
-    state[control_var] = data[control_var].iloc[0] *\
-        protocol.initial_state.end_state[control_var].units
+    state[control_var] = (
+        data[control_var].iloc[0] * protocol.initial_state.end_state[control_var].units
+    )
     protocol.initial_state = InitialState(state)
     protocol.segments[0].previous = protocol.initial_state
-    protocol_change_points = np.cumsum([0] + [seg.duration for seg in
-                                              protocol.segments])
+    protocol_change_points = np.cumsum(
+        [0] + [seg.duration for seg in protocol.segments]
+    )
     # TODO: Standardize variable's units to the unit declaration under
     # Channels section, rather than the first unit encountered.
     unit = protocol.initial_state[control_var].units
-    protocol_values = [protocol.initial_state[control_var].m] +\
-        [seg.end_state[control_var].to(unit).m for seg in protocol.segments]
-    tab_protocol = {"Time [s]": protocol_change_points,
-                    control_var: protocol_values}
+    protocol_values = [protocol.initial_state[control_var].m] + [
+        seg.end_state[control_var].to(unit).m for seg in protocol.segments
+    ]
+    tab_protocol = {"Time [s]": protocol_change_points, control_var: protocol_values}
     time_points = tab_protocol["Time [s]"].copy()
     # ↑ times of change points
     def f(p):
@@ -57,21 +62,33 @@ def label_data(protocol, data, control_var):
             s_d = p  # duration, fit, by segment
         s_tf = time_points[i0] + np.cumsum(np.hstack([[0], s_d]))
         # ^ time, fit, by segment
-        s_dp = np.diff(tab_protocol["Time [s]"][i0:i1+1])
+        s_dp = np.diff(tab_protocol["Time [s]"][i0 : i1 + 1])
         # ^ duration, protocol, by segment
-        tf = np.hstack([np.linspace(s_tf[j], s_tf[j+1], 10)
-                        for j in range(len(s_tf)-1)])
+        tf = np.hstack(
+            [np.linspace(s_tf[j], s_tf[j + 1], 10) for j in range(len(s_tf) - 1)]
+        )
         # ^ time, fit, dense
-        tp = np.hstack([np.linspace(tab_protocol["Time [s]"][i0+j],
-                                    tab_protocol["Time [s]"][i0+j+1],
-                                    10)
-                        for j in range(len(s_tf)-1)])
+        tp = np.hstack(
+            [
+                np.linspace(
+                    tab_protocol["Time [s]"][i0 + j],
+                    tab_protocol["Time [s]"][i0 + j + 1],
+                    10,
+                )
+                for j in range(len(s_tf) - 1)
+            ]
+        )
         # ↑ time, protocol, dense
-        yp = np.interp(tp, tab_protocol["Time [s]"],  # y, protocol, dense
-                       tab_protocol[control_var])
+        yp = np.interp(
+            tp,
+            tab_protocol["Time [s]"],  # y, protocol, dense
+            tab_protocol[control_var],
+        )
         yd = np.interp(tf, data["Time [s]"], data[control_var])  # y, data, dense
-        yf = np.interp(tf, s_tf, tab_protocol[control_var][i0:i1+1])  # y, fit, dense
-        r = np.corrcoef(yf, yd)[0,1]
+        yf = np.interp(
+            tf, s_tf, tab_protocol[control_var][i0 : i1 + 1]
+        )  # y, fit, dense
+        r = np.corrcoef(yf, yd)[0, 1]
         # r = np.cov(yf, yd)[0,1] / np.cov(yp, yp)[0,0]
         if np.isnan(r):
             if np.var(yf) == 0 and np.var(yd) == 0:
@@ -82,29 +99,31 @@ def label_data(protocol, data, control_var):
                 reason = "The values of the control variable `{}` have zero variance in the *current protocol fit* for {} ≤ t ≤ {}."
             else:
                 reason = "The cause is unknown."
-            msg = "The Pearson correlation coefficient between the provided data and the current protocol fit is undefined. " + reason.format(control_var, tf[0], tf[-1])
-            raise(RuntimeError(msg))
+            msg = (
+                "The Pearson correlation coefficient between the provided data and the current protocol fit is undefined. "
+                + reason.format(control_var, tf[0], tf[-1])
+            )
+            raise (RuntimeError(msg))
         # Add time dilation penalty
-        penalty = np.sum((abs(s_d - s_dp) / s_dp)**3.0) / len(s_dp)
+        penalty = np.sum((abs(s_d - s_dp) / s_dp) ** 3.0) / len(s_dp)
         # stdout.write("r = {:.4f}  penalty = {:.4f}  ".format(r, penalty))
         # print("p = {}".format(p))
         return -r + penalty
+
     for i in range(len(tab_protocol["Time [s]"])):
         if i == 0:
-            p0 = np.hstack([[0], np.diff(time_points[i:i+3])])
+            p0 = np.hstack([[0], np.diff(time_points[i : i + 3])])
         else:
-            p0 = np.diff(tab_protocol["Time [s]"][i-1:i+2])
+            p0 = np.diff(tab_protocol["Time [s]"][i - 1 : i + 2])
         # print("\ni = {}".format(i))
         bounds = [(0, np.inf) for x in p0]
-        result = minimize(f, p0, method="L-BFGS-B",
-                          bounds=bounds)
-        time_points[i] = time_points[max([0, i-1])] + result['x'][0]
+        result = minimize(f, p0, method="L-BFGS-B", bounds=bounds)
+        time_points[i] = time_points[max([0, i - 1])] + result["x"][0]
     labeled = ProtocolData(data, data["Time [s]"], protocol, time_points)
     return labeled
 
 
 class ProtocolData:
-
     def __init__(self, data, t, protocol, change_points):
         """Construct an object to store protocol labels for a dataset.
 
@@ -122,9 +141,16 @@ class ProtocolData:
         """
         self.change_points = change_points
 
-        for k in ['segments', 'blocks', 'phases',
-                  'segment_dict', 'block_dict', 'phase_dict',
-                  'phase_of_block', 'phase_of_segment']:
+        for k in [
+            "segments",
+            "blocks",
+            "phases",
+            "segment_dict",
+            "block_dict",
+            "phase_dict",
+            "phase_of_block",
+            "phase_of_segment",
+        ]:
             self.__dict__[k] = protocol.__dict__[k]
 
         self.data_times = t
@@ -137,14 +163,12 @@ class ProtocolData:
             j = i + 1
             t0 = change_points[i]
             t1 = change_points[j]
-            m = np.logical_and(t0 < self.data_times,
-                               self.data_times <= t1)
+            m = np.logical_and(t0 < self.data_times, self.data_times <= t1)
             self.segments[i].data = self.data[m]
             self.segments[i].times = [t0, t1]
 
 
 class InitialState:
-
     def __init__(self, reference_state):
         self._state = reference_state
         self.end_state = self._state
@@ -216,7 +240,7 @@ class LinearSegment:
     # methods.
 
     def __init__(self, previous=None):
-        self.channel = ''
+        self.channel = ""
         self.target = None
         self.rate = None
         self.previous = previous
@@ -224,9 +248,9 @@ class LinearSegment:
     @classmethod
     def from_intermediate(cls, struct, previous=None):
         segment = cls(previous)
-        segment.channel = struct[1]['channel']
-        segment.target = struct[1]['target']
-        segment.rate = struct[1]['rate']
+        segment.channel = struct[1]["channel"]
+        segment.target = struct[1]["target"]
+        segment.rate = struct[1]["rate"]
         return segment
 
     @property
@@ -260,7 +284,11 @@ class LinearSegment:
         change = self.target - initial
         duration = abs(change) / self.rate
         if t >= duration * (1 + eps):
-            raise(ValueError("t = {} > {}; t exceeds the segment's duration.".format(t, duration)))
+            raise (
+                ValueError(
+                    "t = {} > {}; t exceeds the segment's duration.".format(t, duration)
+                )
+            )
         return initial + t / duration * change
 
 
@@ -274,8 +302,9 @@ class Block:
 
     def __iter__(self):
         """Return iterator over segments with cycle repeats"""
-        iterator = (self.cycle[i] for ncycles in range(self.n)
-                    for i in range(len(self.cycle)))
+        iterator = (
+            self.cycle[i] for ncycles in range(self.n) for i in range(len(self.cycle))
+        )
         return iterator
 
     @property
@@ -303,11 +332,17 @@ class Phase:
                 segments.append(e)
             elif isinstance(e, Block):
                 segments.append(seg for seg in e)
-            elif isinstance(e, tuple) and e[0] in ("set-default", "control", "uncontrol"):
+            elif isinstance(e, tuple) and e[0] in (
+                "set-default",
+                "control",
+                "uncontrol",
+            ):
                 # Keyword command, not really supported yet
                 continue
             else:
-                raise NotImplementedError("{self.__class__} does not know how to interpret {e}")
+                raise NotImplementedError(
+                    "{self.__class__} does not know how to interpret {e}"
+                )
         return tuple(segments)
 
 

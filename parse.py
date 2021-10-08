@@ -1,6 +1,7 @@
 # Base packages
 import pathlib
 import re
+
 # Local packages
 from warnings import warn
 from typing import Optional
@@ -45,6 +46,7 @@ class Comment(Token):
 
 class Segment:
     """Parse data for a Segment"""
+
     def __init__(self, transitions):
         self.transitions = transitions
 
@@ -56,15 +58,18 @@ class Segment:
         transitions = []
         for t in self.transitions:
             if t.path is not None:
-                raise ValueError("A transition with path constraint {t.path} was "
-                                 "provided.  Non-default paths are not yet supported. "
-                                 "The default is a linear transition.")
+                raise ValueError(
+                    "A transition with path constraint {t.path} was "
+                    "provided.  Non-default paths are not yet supported. "
+                    "The default is a linear transition."
+                )
             transitions.append(protocol.Transition(t.variable, t.target))
         return protocol.Segment(transitions)
 
 
 class Instruction:
     """Parse data for a keyword instruction"""
+
     def __init__(self, keyword, variable, setting):
         self.keyword = keyword
         self.variable = variable
@@ -76,6 +81,7 @@ class Instruction:
 
 class Phase:
     """Parse data for Phase"""
+
     def __init__(self, name, elements):
         self.name = name
         self.elements = elements
@@ -90,7 +96,9 @@ class Phase:
             elements.append(e.read())
             return protocol.Phase(self.name, elements)
 
+
 # Classes for parsing expressions
+
 
 class BinOp:
     def __init__(self, op, lval, rval):
@@ -141,8 +149,10 @@ class SymbolicValue:
 
 # Classes for parsing protocol statements
 
+
 class Transition:
     """Store parse data for a transition statement, e.g., t → 1 s"""
+
     def __init__(self, variable, target: "Target", path=None):
         self.variable = variable
         self.target = target
@@ -189,15 +199,16 @@ def match_comment(s) -> bool:
 
 # Parsing functions
 
+
 def expand_block(elements):
     """Expand blocks of cycles to individual segments"""
     expanded = []
     active = []
     for e in reversed(elements):
-        if e[0] == 'segment':
+        if e[0] == "segment":
             active.append(e)
-        elif e[0] == 'block':
-            active = active * e[1]['n']
+        elif e[0] == "block":
+            active = active * e[1]["n"]
             expanded += active
             active = []
             expanded.append(e)
@@ -226,7 +237,9 @@ def parse_expression(s):
             i += 1
             j = s[i:].find(")")
             if j == -1:
-                raise ValueError(f"Unmatched open parenthesis.  Next 10 characters after unmatch parenthesis were: {s[i:i+10]}")
+                raise ValueError(
+                    f"Unmatched open parenthesis.  Next 10 characters after unmatch parenthesis were: {s[i:i+10]}"
+                )
             group = parse_expression(s[i:j])
             i = i + j + 1
             return group
@@ -274,7 +287,9 @@ def parse_expression(s):
             if sym := match_symbol():
                 return SymbolicValue(sym, op=un)
             else:
-                raise ValueError(f"Unary operator `{un}` was not followed by a symbolic reference.  The remaining characters in the problem line were: '{s[i:]}'")
+                raise ValueError(
+                    f"Unary operator `{un}` was not followed by a symbolic reference.  The remaining characters in the problem line were: '{s[i:]}'"
+                )
         if sym := match_symbol():
             return SymbolicValue(sym)
 
@@ -304,7 +319,7 @@ def parse_protocol_section(lines):
         if not lines[i].startswith("phase"):
             return None
         # Phase
-        name = lines[i][len("phase"):].strip()
+        name = lines[i][len("phase") :].strip()
         elements = []
         i += 1
         while i < len(lines):
@@ -334,7 +349,9 @@ def parse_protocol_section(lines):
                 elif len(rest) == 1:
                     setting = rest[0]
                 else:  # len(rest) > 1
-                    raise ValueError("Keyword instruction in line '{lines[i]}' has too many parts.")
+                    raise ValueError(
+                        "Keyword instruction in line '{lines[i]}' has too many parts."
+                    )
                 i += 1
                 return Instruction(kw, var, setting)
         return None
@@ -349,7 +366,9 @@ def parse_protocol_section(lines):
                 statements.append(statement)
                 i += 1
             else:
-                raise ValueError(f"The following line is a segment definition but does not contain a valid transition statement: '{lines[i]}'")
+                raise ValueError(
+                    f"The following line is a segment definition but does not contain a valid transition statement: '{lines[i]}'"
+                )
             # Collect subsequent lines belonging to the same segment
             while i < len(lines):
                 if statement := match_transition(lines[i]):
@@ -385,7 +404,7 @@ def parse_protocol_section(lines):
             return None
         # Flag for relative change
         skip_ws(s[i:])
-        if s[i:i+1] == "+":
+        if s[i : i + 1] == "+":
             relative = True
             i += 1
         else:
@@ -449,7 +468,11 @@ def parse_sections(lines, offset=0):
     contents = None
     lines = strip_blank_lines(lines)
     if not lines[0].startswith("*"):
-        raise ValueError("Input data does not have a header as its first non-blank line.  Line {}: {}".format(offset+1, lines[0]))
+        raise ValueError(
+            "Input data does not have a header as its first non-blank line.  Line {}: {}".format(
+                offset + 1, lines[0]
+            )
+        )
     last_nonblank = None  # "header" or "content"
     for i, ln in enumerate(lines):
         if ln.startswith("*"):  # On header line
@@ -461,12 +484,16 @@ def parse_sections(lines, offset=0):
             if any([a != "*" for a in l]):
                 raise ValueError("Line is not a valid header: {}".format(ln))
             if level > len(path) + 1:
-                raise ValueError("Headers skip from level {} to level {}.  Line {}: {}".format(len(path), level, offset+i+1, ln))
+                raise ValueError(
+                    "Headers skip from level {} to level {}.  Line {}: {}".format(
+                        len(path), level, offset + i + 1, ln
+                    )
+                )
             # Store contents of last header
             if contents is not None:
                 _nested_set(sections, path, contents)
             # Prepare to store contents of this header
-            path = path[:level-1] + [name]
+            path = path[: level - 1] + [name]
             contents = None
         elif contents is None and not ln.isspace():
             # Found non-blank contents under current header
@@ -488,7 +515,7 @@ def read_definition(ln):
     if i == -1:
         raise ValueError("Line is not a 'key := value' definition: {}".format(ln))
     k = ln[:i].strip()
-    v = ln[i+len(sym):].strip()
+    v = ln[i + len(sym) :].strip()
     return k, v
 
 
@@ -496,13 +523,16 @@ def read_default_rates(lines):
     rates = {}
     for ln in lines:
         if not _is_blank(ln):
-            m = re.match(r'(?P<var>\w+)\((\w+)\)'
-                         '\s*=\s*'
-                         '\w+\(\w+,\s*'
-                         '(?P<rate>[\s\S]+)'
-                         '\)', ln)
-            rate = ureg.parse_expression(m.group('rate'))
-            rates[m.group('var')] = rate
+            m = re.match(
+                r"(?P<var>\w+)\((\w+)\)"
+                "\s*=\s*"
+                "\w+\(\w+,\s*"
+                "(?P<rate>[\s\S]+)"
+                "\)",
+                ln,
+            )
+            rate = ureg.parse_expression(m.group("rate"))
+            rates[m.group("var")] = rate
     return rates
 
 
@@ -510,14 +540,11 @@ def read_reference_state(lines):
     reference_values = {}
     for ln in lines:
         if not _is_blank(ln):
-            m = re.match(r'(?P<var>\w+)'
-                         '\s*=\s*'
-                         '(?P<expr>[\s\S]+)',
-                         ln)
+            m = re.match(r"(?P<var>\w+)" "\s*=\s*" "(?P<expr>[\s\S]+)", ln)
             tokens = parse_expression(m.group("expr"))
             value = tokens[0]
             value = ureg.Quantity(value.num.v, value.unit.v)
-            reference_values[m.group('var')] = value
+            reference_values[m.group("var")] = value
     return reference_values
 
 
@@ -540,7 +567,7 @@ def _nested_set(dic, path, value):
 
 
 def _is_blank(s):
-    return s.strip() == ''
+    return s.strip() == ""
 
 
 def read_prune(p):
@@ -576,6 +603,8 @@ def read_prune(p):
     p_protocol = parse_protocol_section(sections["protocol"])
     # Read protocol
     defaults = {}
-    defaults['rates'] = read_default_rates(sections['declarations'].get('default interpolation', []))
-    reference_state = read_reference_state(sections['declarations']['initialization'])
+    defaults["rates"] = read_default_rates(
+        sections["declarations"].get("default interpolation", [])
+    )
+    reference_state = read_reference_state(sections["declarations"]["initialization"])
     return protocol.Protocol(reference_state, [e.read() for e in p_protocol])

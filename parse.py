@@ -1,12 +1,26 @@
 # Base packages
 import re
 # Local packages
-from collections import UserString
-from enum import Enum, auto
 from warnings import warn
 from typing import Optional
 
 from .unit import ureg
+
+
+operators = ("+", "-", "−", "/", "*", "×", "^")
+re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
+re_un_op = re.compile(r"^-")
+
+trans_op = ("→", "->")
+re_trans = re.compile(r"^→|->")
+
+re_unit = re.compile(f"^[^{''.join(operators)}]" + r"\w·/\-*°]+")
+
+re_ws = re.compile(r"^\s+")
+
+re_num = re.compile(r"-?(\d*\.)?\d+")
+
+keywords = ("set-default", "control")
 
 
 class Token:
@@ -24,15 +38,26 @@ class Comment(Token):
     def match(self, s: str) -> Optional[str]:
         if s.startswith("#"):
             return s[1:].lstrip()
+        return None
 
 
 class Segment:
-    """Parse data for Segment definition"""
-    def __init__(self, statements):
-        self.statements = statements
+    """Parse data for a Segment"""
+    def __init__(self, transitions):
+        self.transitions = transitions
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.statements!r})"
+        return f"{self.__class__.__name__}({self.transitions!r})"
+
+
+class Phase:
+    """Parse data for Phase"""
+    def __init__(self, name, elements):
+        self.name = name
+        self.elements = elements
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.name!r}, {self.elements!r})"
 
 
 # Classes for parsing expressions
@@ -84,20 +109,6 @@ class SymbolicValue:
         return f"{self.__class__.__name__}({self.operator or ''}{self.symbol})"
 
 
-operators = ("+", "-", "−", "/", "*", "×", "^")
-re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
-re_un_op = re.compile(r"^-")
-
-trans_op = ("→", "->")
-re_trans = re.compile(r"^→|->")
-
-re_unit = re.compile(f"^[^{''.join(operators)}]" + r"\w·/\-*°]+")
-
-re_ws = re.compile(r"^\s+")
-
-re_num = re.compile(r"-?(\d*\.)?\d+")
-
-
 # Classes for parsing protocol statements
 
 class Transition:
@@ -128,6 +139,20 @@ class AbsoluteTarget(Target):
 
 class RelativeTarget(Target):
     pass
+
+
+def match_blank(s) -> bool:
+    if s == "" or re_ws.match(s):
+        return True
+    else:
+        return False
+
+
+def match_comment(s) -> bool:
+    if s.startswith("#"):
+        return True
+    else:
+        return False
 
 
 ## Parsing functions
@@ -241,6 +266,40 @@ def parse_protocol_section(lines):
     """Return list of elements from content of the protocol section"""
     i = 0  # index of next line to match; if ≥ len(lines), return immediately
 
+    def match_phase():
+        """Match phase definition & advance line number"""
+        nonlocal i
+        if not lines[i].startswith("phase"):
+            return None
+        # Phase
+        name = lines[i][len("phase"):].strip()
+        elements = []
+        i += 1
+        while i < len(lines):
+            if match_blank(lines[i]):
+                i += 1
+                continue
+            if match_comment(lines[i]):
+                i += 1
+                continue
+            if m := match_kw_instruction():
+                elements.append(m)
+                continue
+            if m := match_segment():
+                elements.append(m)
+                continue
+            break
+        return Phase(name, elements)
+
+    def match_kw_instruction():
+        """Match keyword-prefixed instruction"""
+        nonlocal i
+        for kw in keywords:
+            if lines[i].startswith(kw):
+                instruction = lines[i]
+                i += 1
+                return instruction
+
     def match_segment():
         """Match segment definition & advance line number"""
         nonlocal i
@@ -266,33 +325,33 @@ def parse_protocol_section(lines):
         """Match transition statement & advance line number"""
         i = 0
 
-        def consume_ws(s):
+        def skip_ws(s):
             nonlocal i
             if m := re_ws.match(s):
                 i += m.end()
 
         # Symbol
-        consume_ws(s[i:])
+        skip_ws(s[i:])
         if m := Symbol.match(s[i:]):
             var = m
             i += len(m)
         else:
             return None
         # Transition operator
-        consume_ws(s[i:])
+        skip_ws(s[i:])
         if m := re_trans.match(s[i:]):
             i += m.end()
         else:
             return None
         # Flag for relative change
-        consume_ws(s[i:])
+        skip_ws(s[i:])
         if s[i:i+1] == "+":
             relative = True
             i += 1
         else:
             relative = False
         # Target
-        consume_ws(s[i:])
+        skip_ws(s[i:])
         if m := parse_expression(s[i:]):
             expr = m
             i += len(expr)
@@ -306,17 +365,27 @@ def parse_protocol_section(lines):
 
     protocol = []  # list of ([children], kind, {param: value}) tuples.
     while i < len(lines):
-        ln = lines[i]
-        # Phase
-        if ln.startswith("phase"):
-            kw, lbl = ln.strip().split()
-            lbl = lbl.strip('"')
-            element = ("phase", {"label": lbl})
-            protocol.append(element)
+        # Blank line
+        if match_blank(lines[i]):
             i += 1
             continue
+        # Comment
+        if match_comment(lines[i]):
+            i += 1
+            continue
+        # Instruction
+        if m := match_kw_instruction():
+            # match_keyword advances line number
+            protocol.append(m)
+            continue
+        # Phase
+        if m := match_phase():
+            # match_phase advances line number
+            protocol.append(m)
+            continue
         # Block
-        if ln.startswith("repeat"):
+        if lines[i].startswith("repeat"):
+            ln = lines[i]
             kw, count = ln.strip().split(",")
             n = int(count.rstrip("cycles").strip())
             protocol.append(("block", {"n": n}))
@@ -328,14 +397,8 @@ def parse_protocol_section(lines):
             protocol.append(m)
             i += 1
             continue
-        # Blank line separator.  These are important to preserve # because they #
-        # terminate blocks.
-        if re_ws.match(lines[i]) or lines[i] == "":
-            protocol.append(("sep",))
-            i += 1
-            continue
         # Unrecognized
-        warn(f"Did not recognize syntax of line: {lines[i]}")
+        warn(f"Did not recognize syntax of line: {lines[i]!r}")
         i += 1
     return protocol
 

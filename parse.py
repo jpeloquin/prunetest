@@ -1,9 +1,11 @@
 # Base packages
+import pathlib
 import re
 # Local packages
 from warnings import warn
 from typing import Optional
 
+from . import protocol
 from .unit import ureg
 
 
@@ -20,7 +22,7 @@ re_ws = re.compile(r"^\s+")
 
 re_num = re.compile(r"-?(\d*\.)?\d+")
 
-keywords = ("set-default", "control")
+keywords = ("set-default", "control", "uncontrol")
 
 
 class Token:
@@ -49,6 +51,28 @@ class Segment:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.transitions!r})"
 
+    def read(self):
+        """Return protocol.Segment object from parse data"""
+        transitions = []
+        for t in self.transitions:
+            if t.path is not None:
+                raise ValueError("A transition with path constraint {t.path} was "
+                                 "provided.  Non-default paths are not yet supported. "
+                                 "The default is a linear transition.")
+            transitions.append(protocol.Transition(t.variable, t.target))
+        return protocol.Segment(transitions)
+
+
+class Instruction:
+    """Parse data for a keyword instruction"""
+    def __init__(self, keyword, variable, setting):
+        self.keyword = keyword
+        self.variable = variable
+        self.setting = setting
+
+    def read(self):
+        return self.keyword, self.variable, self.setting
+
 
 class Phase:
     """Parse data for Phase"""
@@ -59,6 +83,12 @@ class Phase:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.name!r}, {self.elements!r})"
 
+    def read(self):
+        """Return protocol.Phase instance from parse data"""
+        elements = []
+        for e in self.elements:
+            elements.append(e.read())
+            return protocol.Phase(self.name, elements)
 
 # Classes for parsing expressions
 
@@ -113,16 +143,16 @@ class SymbolicValue:
 
 class Transition:
     """Store parse data for a transition statement, e.g., t → 1 s"""
-    def __init__(self, variable, target: "Target", interpolant=None):
+    def __init__(self, variable, target: "Target", path=None):
         self.variable = variable
         self.target = target
-        # The default interpolant at the model layer should be linear,
+        # The default path at the model layer should be linear,
         # but since this class is just parse data, we store what we
         # found.
-        self.interpolant = interpolant
+        self.path = path
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.variable} → {self.target})"
+        return f"{self.__class__.__name__}({self.variable}, {self.target}, {self.path})"
 
 
 class Target:
@@ -134,11 +164,13 @@ class Target:
 
 
 class AbsoluteTarget(Target):
-    pass
+    def read(self):
+        return protocol.AbsoluteTarget(self.target)
 
 
 class RelativeTarget(Target):
-    pass
+    def read(self):
+        return protocol.RelativeTarget(self.target)
 
 
 def match_blank(s) -> bool:
@@ -155,9 +187,9 @@ def match_comment(s) -> bool:
         return False
 
 
-## Parsing functions
+# Parsing functions
 
-def expand_blocks(elements):
+def expand_block(elements):
     """Expand blocks of cycles to individual segments"""
     expanded = []
     active = []
@@ -282,7 +314,7 @@ def parse_protocol_section(lines):
             if match_comment(lines[i]):
                 i += 1
                 continue
-            if m := match_kw_instruction():
+            if m := match_instruction():
                 elements.append(m)
                 continue
             if m := match_segment():
@@ -291,14 +323,21 @@ def parse_protocol_section(lines):
             break
         return Phase(name, elements)
 
-    def match_kw_instruction():
+    def match_instruction():
         """Match keyword-prefixed instruction"""
         nonlocal i
         for kw in keywords:
             if lines[i].startswith(kw):
-                instruction = lines[i]
+                kw, var, *rest = lines[i].split()
+                if len(rest) == 0:
+                    setting = None
+                elif len(rest) == 1:
+                    setting = rest[0]
+                else:  # len(rest) > 1
+                    raise ValueError("Keyword instruction in line '{lines[i]}' has too many parts.")
                 i += 1
-                return instruction
+                return Instruction(kw, var, setting)
+        return None
 
     def match_segment():
         """Match segment definition & advance line number"""
@@ -318,8 +357,9 @@ def parse_protocol_section(lines):
                     i += 1
                 else:
                     break
-            # still in `if lines[i].startswith("|")`
             return Segment(statements)
+        else:
+            return None
 
     def match_transition(s: str) -> Optional[str]:
         """Match transition statement & advance line number"""
@@ -374,7 +414,7 @@ def parse_protocol_section(lines):
             i += 1
             continue
         # Instruction
-        if m := match_kw_instruction():
+        if m := match_instruction():
             # match_keyword advances line number
             protocol.append(m)
             continue
@@ -501,3 +541,41 @@ def _nested_set(dic, path, value):
 
 def _is_blank(s):
     return s.strip() == ''
+
+
+def read_prune(p):
+    """Read a file as a prunetest protocol
+
+    :param p: File path or a file-like object with a readlines method.
+
+    """
+    if isinstance(p, str) or isinstance(p, pathlib.Path):
+        # Assume p is a path
+        with open(p, "r") as f:
+            lines = f.readlines()
+    else:
+        # Assume p is an object that supports line-oriented IO
+        lines = p.readlines()
+    # Read metadata
+    metadata = {}
+    in_metadata = True
+    for i, ln in enumerate(lines):
+        if ln.isspace():
+            # Empty line
+            pass
+        elif ln.startswith("*"):
+            # Is a header; no longer in metadata section
+            break
+        else:
+            # Is a metadata line
+            k, v = read_definition(ln)
+            metadata[k] = v
+    # Read headers and enclosed data
+    sections = parse_sections(lines[i:], offset=i)
+    # Parse protocol
+    p_protocol = parse_protocol_section(sections["protocol"])
+    # Read protocol
+    defaults = {}
+    defaults['rates'] = read_default_rates(sections['declarations'].get('default interpolation', []))
+    reference_state = read_reference_state(sections['declarations']['initialization'])
+    return protocol.Protocol(reference_state, [e.read() for e in p_protocol])

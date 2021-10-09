@@ -1,5 +1,4 @@
 # Base packages
-import pathlib
 from collections import OrderedDict
 import sys
 import warnings
@@ -8,7 +7,6 @@ import numpy as np
 from scipy.optimize import minimize
 # Local packages
 from .unit import ureg
-from . import parse
 
 def label_data(protocol, data, control_var):
     """Label a table of test data based on a protocol.
@@ -105,164 +103,6 @@ def label_data(protocol, data, control_var):
     return labeled
 
 
-def read_prune(p):
-    """Read a file as a prunetest protocol
-
-    :param p: File path or a file-like object with a readlines method.
-
-    """
-    if isinstance(p, str) or isinstance(p, pathlib.Path):
-        # Assume p is a path
-        with open(p, "r") as f:
-            lines = f.readlines()
-    else:
-        # Assume p is an object that supports line-oriented IO
-        lines = p.readlines()
-    # Read metadata
-    metadata = {}
-    in_metadata = True
-    for i, ln in enumerate(lines):
-        if ln.isspace():
-            # Empty line
-            pass
-        elif ln.startswith("*"):
-            # Is a header; no longer in metadata section
-            break
-        else:
-            # Is a metadata line
-            k, v = parse.read_definition(ln)
-            metadata[k] = v
-    # Read headers and enclosed data
-    sections = parse.parse_sections(lines[i:], offset=i)
-    # Parse protocol
-    p_protocol = parse.parse_protocol_section(sections["protocol"])
-    # Read protocol
-    defaults = {}
-    defaults['rates'] = parse.read_default_rates(sections['declarations'].get('default interpolation', []))
-    reference_state = parse.read_reference_state(sections['declarations']['initialization'])
-    protocol = read_parsed_protocol(p_protocol, reference_state, defaults)
-    return protocol
-
-
-def read_parsed_protocol(elements, reference_state, defaults=None):
-    """Return Protocol object
-
-    read_parsed_protocol exists as a distinct function from
-    parse.parse_protocol because constructing the Protocol object also
-    requires the reference state and any defaults to be available.
-
-    """
-    elements = parse.expand_blocks(elements)
-    i = 0  # next segment index (0-indexed)
-    segments = []
-    blocks = []
-    phases = []
-    active_block = None
-    active_phase = None
-    for e in elements:
-        if e[0] == 'segment':
-            if e[1]['channel'] not in ['Δ.t', 't'] and 'rate' not in e[1]:
-                e[1]['rate'] = defaults['rates'][e[1]['channel']]
-            segments.append(e)
-            if active_block is not None:
-                active_block[1].append(i)
-            if active_phase is not None:
-                active_phase[1].append(i)
-            i += 1
-        elif e[0] == 'block':
-            active_block = ('block', [], e[1])
-        elif e[0] == 'phase':
-            if active_phase is not None:
-                phases.append(active_phase)
-            active_phase = ('phase', [], e[1])
-        elif e[0] == 'sep':
-            if active_block is not None:
-                blocks.append(active_block)
-                active_block = None
-    ## Add non-terminated blocks and phases
-    if active_block is not None:
-        blocks.append(active_block)
-        active_block = None
-    if active_phase is not None:
-        phases.append(active_phase)
-        active_phase = None
-    protocol = Protocol.from_intermediate(segments, blocks, phases,
-                                          reference_state)
-    return protocol
-
-
-def segment_from_intermediate(struct, previous=None):
-    """Return a segment object from intermediate representation."""
-    if struct[1]['channel'] == 'Δ.t':
-        return HoldSegment.from_intermediate(struct, previous)
-    elif struct[1]['channel'] == 't':
-        raise NotImplementedError
-    else:
-        return LinearSegment.from_intermediate(struct, previous)
-
-
-class Protocol:
-
-    def __init__(self):
-        self.segments = []
-        self.blocks = []
-        self.phases = []
-
-        ## Dictionaries to access blocks and phases by label
-        self.segment_dict = OrderedDict()
-        self.block_dict = OrderedDict()
-        self.phase_dict = OrderedDict()
-
-
-    @classmethod
-    def from_intermediate(cls, segments, blocks, phases, reference_state):
-        """Construct a Protocol object from parsed intermediate representation.
-
-        """
-        protocol = cls()
-        # Initial state
-        protocol.initial_state = InitialState(reference_state)
-        # Segments
-        protocol.segments = []
-        previous = protocol.initial_state
-        for s in segments:
-            segment = segment_from_intermediate(s, previous=previous)
-            protocol.segments.append(segment)
-            previous = segment
-        # Blocks
-        for b in blocks:
-            block = Block.from_intermediate(protocol, b)
-            protocol.blocks.append(block)
-            if block.label != '':
-                if block.label in protocol.block_dict:
-                    warnings.warn("Block label `{}` is not unique.  It will refer to the last phase with this label.".format(block.label))
-                protocol.block_dict[block.label] = block
-        # Phases
-        for p in phases:
-            phase = Phase.from_intermediate(protocol, p)
-            protocol.phases.append(phase)
-            if phase.label != '':
-                if phase.label in protocol.phase_dict:
-                    warnings.warn("Phase label `{}` is not unique.  It will refer to the last phase with this label.".format(phase.label))
-                protocol.phase_dict[phase.label] = phase
-
-        protocol._init_parentage()
-
-        return protocol
-
-    def _init_parentage(self):
-        self.phase_of_segment = {}
-        self.phase_of_block = {}
-        for phase in self.phases:
-            for segment in phase.segments:
-                self.phase_of_segment[segment] = phase
-        for block in self.blocks:
-            phase0 = self.phase_of_segment[block.segments[0]]
-            phase1 = self.phase_of_segment[block.segments[-1]]
-            assert phase0 == phase1
-            self.phase_of_block[block] = phase0
-
-
 class ProtocolData:
 
     def __init__(self, data, t, protocol, change_points):
@@ -319,25 +159,61 @@ class InitialState:
         return self._state[k]
 
 
-class HoldSegment:
+class Target:
+    def __init__(self, value):
+        self.value = value
 
-    def __init__(self, channel, previous=None):
-        self.duration = 0
-        self.previous = previous
-        self.end_state = self.previous.end_state.copy()
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.target})"
 
-    @classmethod
-    def from_intermediate(cls, struct, previous=None):
-        segment = cls(struct[1]['channel'], previous=previous)
-        segment.duration = struct[1]['target'].to("s").m
-        return segment
 
-    def evaluate(self, t):
-        # Return values at end of last segment
+class AbsoluteTarget(Target):
+    def __str__(self):
+        return f"{self.value}"
+
+
+class RelativeTarget(Target):
+    # Should the relative target store a reference to the prior state?
+    # If not, the absolute target can only be resolved by walking a
+    # sequence of (state, segment, …).  That's true regardless but the
+    # interface could hide the fact.
+    def __str__(self):
+        return f"+ {self.value}"
+
+
+class Transition:
+    def __init__(self, variable: str, target: Target, path="linear"):
+        self.variable = variable
+        self.target = target
+        self.path = path
+
+    def __str__(self):
+        return f"{self.variable} → {self.target}"
+
+
+class Segment:
+    def __init__(self, transitions: list[Transition]):
+        """Return Segment object"""
+        self.transitions = {t.variable: t for t in transitions}
+
+    def eval(self, variable, value):
+        """Return state when variable == value
+
+        The variable used as the abscissa must have a monotonic
+        transition defined within the segment.
+
+        """
+        raise NotImplementedError
+
+    def target(self):
+        """Return target state for all variables"""
         raise NotImplementedError
 
 
 class LinearSegment:
+
+    # Delete this class as soon as the new Segment class has working eval and target
+    # methods.
 
     def __init__(self, previous=None):
         self.channel = ''
@@ -388,61 +264,79 @@ class LinearSegment:
         return initial + t / duration * change
 
 
-class SegmentList:
-    def __init__(self, protocol, segment_ids=None, params=None):
-        ## Retain reference to parent protocol
-        self.protocol = protocol
+class Block:
+    def __init__(self, cycle, n):
+        self.cycle = cycle
+        self.n = n
 
-        if segment_ids is None:
-            self._isegments = []
-        else:
-            self._isegments = segment_ids
+    def __repr__(self):
+        return f"self.__class__.__name__({self.cycle}, {self.n})"
 
-        if params is not None and 'label' in params:
-            self.label = params['label']
-        else:
-            self.label = ''
-
-    def append(self, i):
-        self._isegments.append(i)
-
-    @property
-    def segments(self):
-        return [self.protocol.segments[i]
-                for i in self._isegments]
-
-
-class Block(SegmentList):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    @classmethod
-    def from_intermediate(cls, protocol, struct):
-        block = cls(protocol, struct[1], struct[2])
-        block.cycle_length = len(struct[1]) // struct[2]['n']
-        return block
+    def __iter__(self):
+        """Return iterator over segments with cycle repeats"""
+        iterator = (self.cycle[i] for ncycles in range(self.n)
+                    for i in range(len(self.cycle)))
+        return iterator
 
     @property
     def cycles(self):
-        n = len(self._isegments) // self.cycle_length
-        return [[self.protocol.segments[j]
-                 for j in self._isegments[2*i:2*i+self.cycle_length]]
-                for i in range(n)]
+        return tuple(self.cycle for ncycles in range(self.n))
+
+    @property
+    def segments(self):
+        return tuple(iter(self))
 
 
-class Cycle(SegmentList):
+class Phase:
+    def __init__(self, name, elements):
+        self.name = name
+        self.elements = elements
 
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __repr__(self):
+        return f"self.__class__.__name__({self.name!r}, {self.elements})"
+
+    @property
+    def segments(self):
+        segments = []
+        for e in self.elements:
+            if isinstance(e, Segment):
+                segments.append(e)
+            elif isinstance(e, Block):
+                segments.append(seg for seg in e)
+            elif isinstance(e, tuple) and e[0] in ("set-default", "control", "uncontrol"):
+                # Keyword command, not really supported yet
+                continue
+            else:
+                raise NotImplementedError("{self.__class__} does not know how to interpret {e}")
+        return tuple(segments)
 
 
-class Phase(SegmentList):
+class Protocol:
+    def __init__(self, initial_state, elements):
+        # Make the protocol data immutable-ish
+        self.initial_state = initial_state
+        self.elements = tuple(elements)
 
-    def __init__(self, *args):
-        super().__init__(*args)
+        # Dictionaries to access phases by name.  Add dicts for segments and blocks
+        # if they get names later.
+        self.phase_dict = OrderedDict()
 
-    @classmethod
-    def from_intermediate(cls, protocol, struct):
-        phase = cls(protocol, struct[1], struct[2])
-        return phase
+        # Create membership maps
+        self.phase_of_segment = {}
+        self.phase_of_block = {}
+        for element in self.elements:
+            if isinstance(element, Phase):
+                phase = element
+                self.phase_dict[phase.name] = phase
+                # Segments
+                for segment in phase.segments:
+                    self.phase_of_segment[segment] = phase
+                # Blocks
+                for e in phase.elements:
+                    if isinstance(e, Block):
+                        self.phase_of_block[e] = phase
+            # Outside of any phase
+            if isinstance(element, Segment):
+                self.phase_of_segment[e] = None
+            if isinstance(element, Block):
+                self.phase_of_block[e] = None

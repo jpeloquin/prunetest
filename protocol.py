@@ -211,6 +211,9 @@ class Transition:
         self.target = target
         self.path = path
 
+    def __repr__(self):
+        return f"{self.__class__}({self.variable}, {self.target}, {self.path})"
+
     def __str__(self):
         return f"{self.variable} → {self.target}"
 
@@ -219,6 +222,9 @@ class Segment:
     def __init__(self, transitions: list[Transition]):
         """Return Segment object"""
         self.transitions = {t.variable: t for t in transitions}
+
+    def __repr__(self):
+        return f"{self.__class__}({self.transitions})"
 
     def eval(self, variable, value):
         """Return state when variable == value
@@ -322,7 +328,7 @@ class Phase:
         self.elements = elements
 
     def __repr__(self):
-        return f"self.__class__.__name__({self.name!r}, {self.elements})"
+        return f"{self.__class__}({self.name}, {self.elements})"
 
     @property
     def segments(self):
@@ -375,3 +381,12 @@ class Protocol:
                 self.phase_of_segment[e] = None
             if isinstance(element, Block):
                 self.phase_of_block[e] = None
+
+    def __repr__(self):
+        return f"{self.__class__}({self.initial_state}, {self.elements})"
+
+    def __str__(self):
+        s = f"Protocol with {len(self.elements)} elements:\n"
+        for e in self.elements:
+            s += f"  {e}\n"
+        return s

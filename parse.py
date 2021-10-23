@@ -94,7 +94,7 @@ class Phase:
         elements = []
         for e in self.elements:
             elements.append(e.read())
-            return protocol.Phase(self.name, elements)
+        return protocol.Phase(self.name, elements)
 
 
 # Classes for parsing expressions

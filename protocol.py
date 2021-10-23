@@ -390,3 +390,20 @@ class Protocol:
         for e in self.elements:
             s += f"  {e}\n"
         return s
+
+    # Perhaps this should be cached for performance?  It would help if the protocol were
+    # genuinely immutable.
+    @property
+    def segments(self):
+        """Return iterator over segments
+
+        Skips instructions; e.g., set-default, control, and uncontrol.
+
+        """
+        segments = tuple()
+        for part in self.elements:
+            if isinstance(part, Segment):
+                segments += (part,)
+            elif hasattr(part, "segments"):
+                segments += part.segments
+        return segments

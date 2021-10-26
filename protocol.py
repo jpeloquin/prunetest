@@ -491,7 +491,9 @@ class Protocol:
                     states.append(next_state)
                     break
                 elif value <= t0:
-                    raise ValueError(f"Provided values of {variable} are not monotonically increasing")
+                    raise ValueError(
+                        f"Provided values of {variable} are not monotonically increasing"
+                    )
                 else:
                     # independent variable value not in this segment; check next segment
                     j += 1

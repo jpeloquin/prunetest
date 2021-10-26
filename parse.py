@@ -26,6 +26,14 @@ re_num = re.compile(r"-?(\d*\.)?\d+")
 keywords = ("set-default", "control", "uncontrol")
 
 
+def to_number(s):
+    """Convert numeric string to int or float as appropriate."""
+    try:
+        return int(s)
+    except ValueError:
+        return float(s)
+
+
 class Token:
     def __init__(self, v):
         self.v = v
@@ -63,7 +71,7 @@ class Segment:
                     "provided.  Non-default paths are not yet supported. "
                     "The default is a linear transition."
                 )
-            transitions.append(protocol.Transition(t.variable, t.target))
+            transitions.append(t.read())
         return protocol.Segment(transitions)
 
 
@@ -108,7 +116,8 @@ class BinOp:
 
 
 class Number(Token):
-    pass
+    def read(self):
+        return to_number(self.v)
 
 
 class Operator(Token):
@@ -116,7 +125,8 @@ class Operator(Token):
 
 
 class Unit(Token):
-    pass
+    def read(self):
+        return ureg(self.v)
 
 
 class Symbol(Token):
@@ -137,6 +147,9 @@ class NumericValue:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.num}, {self.unit!r})"
 
+    def read(self):
+        return self.num.read() * self.unit.read()
+
 
 class SymbolicValue:
     def __init__(self, symbol, op=None):
@@ -145,6 +158,10 @@ class SymbolicValue:
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.operator or ''}{self.symbol})"
+
+    def read(self):
+        # How do we handle symbolic values?
+        return self
 
 
 # Classes for parsing protocol statements
@@ -164,23 +181,29 @@ class Transition:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.variable}, {self.target}, {self.path})"
 
+    def read(self):
+        path = self.path if self.path is not None else "linear"
+        return protocol.Transition(self.variable, self.target.read(), path)
+
 
 class Target:
-    def __init__(self, target):
-        self.target = target
+    def __init__(self, expr):
+        self.value = expr
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.target})"
+        return f"{self.__class__.__name__}({self.value})"
 
 
 class AbsoluteTarget(Target):
     def read(self):
-        return protocol.AbsoluteTarget(self.target)
+        # For now, require simple expressions as targets
+        return protocol.AbsoluteTarget(self.value[0].read())
 
 
 class RelativeTarget(Target):
     def read(self):
-        return protocol.RelativeTarget(self.target)
+        # For now, require simple expressions as targets
+        return protocol.RelativeTarget(self.value[0].read())
 
 
 def match_blank(s) -> bool:
@@ -542,8 +565,7 @@ def read_reference_state(lines):
         if not _is_blank(ln):
             m = re.match(r"(?P<var>\w+)" "\s*=\s*" "(?P<expr>[\s\S]+)", ln)
             tokens = parse_expression(m.group("expr"))
-            value = tokens[0]
-            value = ureg.Quantity(value.num.v, value.unit.v)
+            value = ureg.Quantity(to_number(tokens[0].num.v), tokens[0].unit.v)
             reference_values[m.group("var")] = value
     return reference_values
 

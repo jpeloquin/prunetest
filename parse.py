@@ -319,6 +319,9 @@ def parse_expression(s):
     stream = []
     while i < len(s):
         match_ws()
+        if i == len(s):
+            # Have to break manually if everything left was whitespace.
+            break
         if group := match_group():
             stream.append(tuple(group))
             continue
@@ -328,7 +331,6 @@ def parse_expression(s):
         if binary := match_binary_op():
             stream.append(Operator(binary))
             continue
-        raise ValueError(f"Could not interpret {s[i:]}")
     return stream
 
 
@@ -404,8 +406,20 @@ def parse_protocol_section(lines):
             return None
 
     def match_transition(s: str) -> Optional[str]:
-        """Match transition statement & advance line number"""
+        """Match transition statement & advance line number
+
+        Matches optional trailing comment, but expects the leading "|" for the first
+        transition in a segment to already be stripped.
+
+        """
         i = 0
+
+        # TODO: This is a hack; handle comments more properly.  Right now
+        #  parse_expression switches to a token stream too early and can't cope with
+        #
+        #  a trailing comment.
+        if (idx := s.find("#")) != -1:
+            s = s[:idx]
 
         def skip_ws(s):
             nonlocal i

@@ -1,5 +1,5 @@
 # Base packages
-from collections import OrderedDict
+from collections import OrderedDict, abc
 import sys
 import warnings
 
@@ -226,18 +226,63 @@ class Segment:
     def __repr__(self):
         return f"{self.__class__}({self.transitions})"
 
-    def eval(self, variable, value):
-        """Return state when variable == value
+    @property
+    def variables(self):
+        """Return list of this segment's controlled variables"""
+        return set(self.transitions.keys())
 
-        The variable used as the abscissa must have a monotonic
-        transition defined within the segment.
+    def eval(self, variable, value, initial_state):
+        """Return succession of states at an independent variable's values
+
+        The independent variable must be strictly monotonically increasing.
+        Typically the independent variable is time or pseudo-time.
 
         """
-        raise NotImplementedError
+        # TODO: How do I want to handle relative vs. absolute targets for eval?
+        # Initialize evaluated state
+        state = {var: None for var in self.transitions}
+        state[variable] = value
+        try:
+            trans = self.transitions[variable]
+        except KeyError:
+            raise ValueError(f"Variable '{variable}' is not controlled in this segment")
+        try:
+            v0 = initial_state[variable]
+        except KeyError:
+            raise ValueError(f"Variable '{variable}' not in provided initial state.")
+        v1 = trans.target.value
+        if trans.path == "linear":
+            # Define pseudo-time s; 0 ≤ s ≤ 1, where s = 0 is the start of the segment
+            # and s = 1 is the end.
+            s_crit = (value - v0) / (v1 - v0.m)
+            for var in self.transitions:
+                if var == variable:
+                    # Already handled the abscissa
+                    continue
+                v0 = initial_state[var]
+                v1 = self.transitions[var].target
+                state[var] = s_crit * (v1 - v0)
+        else:
+            raise NotImplementedError
+        return state
 
-    def target(self):
-        """Return target state for all variables"""
-        raise NotImplementedError
+    def targets(self, initial_state):
+        """Return target state for all variables
+
+        `target` is basically an `eval` that returns the segment's final state.  As
+        such, there is no need to specify an independent variable.  The segment's
+        initial state is in general still required to allow calculation of state for
+        relative transitions, but if all transitions are absolutely valued (independent
+        of initial state) an empty dict may be provided for the initial state.
+
+        """
+        state = {}
+        for t in self.transitions:
+            if isinstance(t, AbsoluteTarget):
+                state[t.variable] = t.target.value
+            else:
+                state[t.variable] = t.target.value + initial_state[t.variable]
+        return state
 
 
 class LinearSegment:
@@ -394,10 +439,11 @@ class Protocol:
     # Perhaps this should be cached for performance?  It would help if the protocol were
     # genuinely immutable.
     @property
-    def segments(self):
-        """Return iterator over segments
+    def segments(self) -> abc.Sequence:
+        """Return sequence of Segments
 
-        Skips instructions; e.g., set-default, control, and uncontrol.
+        Only segments are included in the return value.  Instructions (e.g.,
+        set-default, control, and uncontrol) are not included.
 
         """
         segments = tuple()
@@ -407,3 +453,47 @@ class Protocol:
             elif hasattr(part, "segments"):
                 segments += part.segments
         return segments
+
+    def eval(self, variable: str, values):
+        """Return succession of states at an independent variable's values
+
+        :param variable: The independent variable which has values at which the
+        protocol's state will be calculated.  The independent variable must be
+        strictly monotonically increasing. Typically the independent variable is
+        (pseudo-)time.
+
+        :param values: The values of the independent variable at which the protocol's
+        state will be calculated.  The values must be monotonically increasing.
+
+        :returns: Sequence of states.  Each state is a map: variable name → value.
+
+        """
+        states = []
+        i = 0  # index into `values`
+        segments = self.segments
+        j = 0  # index into segments
+        last_state = self.initial_state
+        while i < len(values):
+            value = values[i]
+            while j < len(segments):
+                segment = segments[j]
+                t0 = last_state[variable]
+                next_state = segment.targets(initial_state=last_state)
+                t1 = next_state[variable]
+                if t0 < value < t1:
+                    s = segment.eval(variable, value, last_state)
+                    states.append(s)
+                    i += 1
+                    break
+                elif value == t1:
+                    # Special case when abscissa is at the end of a segment so we get
+                    # exact values.
+                    states.append(next_state)
+                    break
+                elif value <= t0:
+                    raise ValueError(f"Provided values of {variable} are not monotonically increasing")
+                else:
+                    # independent variable value not in this segment; check next segment
+                    j += 1
+                    continue
+        return tuple(states)

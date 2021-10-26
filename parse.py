@@ -10,14 +10,16 @@ from . import protocol
 from .unit import ureg
 
 
-operators = ("+", "-", "−", "/", "*", "×", "^")
+operators = ("+", "-", "−", "/", "*", "×", "^", "·")
 re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
 re_un_op = re.compile(r"^-")
 
 trans_op = ("→", "->")
 re_trans = re.compile(r"^→|->")
 
-re_unit = re.compile(f"^[^{''.join(operators)}]" + r"\w·/\-*°]+")
+re_unit = re.compile(
+    r"(\w|°)+(\s*" f"[{''.join(op for op in operators)}]" r"\s*(\w|°)+)*"
+)
 
 re_ws = re.compile(r"^\s+")
 
@@ -562,10 +564,10 @@ def read_default_rates(lines):
         if not _is_blank(ln):
             m = re.match(
                 r"(?P<var>\w+)\((\w+)\)"
-                "\s*=\s*"
-                "\w+\(\w+,\s*"
-                "(?P<rate>[\s\S]+)"
-                "\)",
+                r"\s*=\s*"
+                r"\w+\(\w+,\s*"
+                r"(?P<rate>[\s\S]+)"
+                r")",
                 ln,
             )
             rate = ureg.parse_expression(m.group("rate"))
@@ -577,7 +579,7 @@ def read_reference_state(lines):
     reference_values = {}
     for ln in lines:
         if not _is_blank(ln):
-            m = re.match(r"(?P<var>\w+)" "\s*=\s*" "(?P<expr>[\s\S]+)", ln)
+            m = re.match(r"(?P<var>\w+)" r"\s*=\s*" r"(?P<expr>[\s\S]+)", ln)
             tokens = parse_expression(m.group("expr"))
             value = ureg.Quantity(to_number(tokens[0].num.v), tokens[0].unit.v)
             reference_values[m.group("var")] = value

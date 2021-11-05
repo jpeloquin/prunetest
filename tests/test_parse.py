@@ -9,6 +9,17 @@ def test_is_blank_line():
     assert not parse.is_ws("abc\n\r")
 
 
+def test_match_assignment():
+    for s in ("r = 1 mm", "r=1 mm", " r = 1 mm", "r = 1 mm "):
+        m = parse.Assignment.match(s)
+        assert m
+        assert m.parameter == "r"
+        assert len(m.expression) == 1
+        assert isinstance(m.expression[0], parse.NumericValue)
+        assert m.expression[0].num.v == "1"
+        assert m.expression[0].unit.v == "mm"
+
+
 def test_match_unit_blank():
     assert parse.re_unit.match("") is None
     assert parse.re_unit.match(" ") is None

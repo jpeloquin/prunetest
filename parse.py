@@ -165,6 +165,39 @@ class SymbolicValue:
         return self
 
 
+# Classes for parsing parameter definitions and assignments
+
+
+class Assignment:
+    """Assignment; e.g., a = 1 mm
+
+    The right hand side can be an expression, not just a value.
+
+    """
+    def __init__(self, parameter, expression):
+        self.parameter = parameter
+        self.expression = expression
+
+    @classmethod
+    def match(cls, s):
+        name = None
+        expr = None
+        i = 0
+        i += match_ws(s[i:])
+        if m := Name.match(s[i:]):
+            i += len(m)
+            name = m
+        else:
+            return False
+        i += match_ws(s[i:])
+        if not s[i] == "=":
+            return False
+        i += 1
+        i += match_ws(s[i:])
+        expr = parse_expression(s[i:])
+        return cls(name, expr)
+
+
 # Classes for parsing protocol statements
 
 
@@ -337,6 +370,7 @@ def parse_expression(s):
         if binary := match_binary_op():
             stream.append(Operator(binary))
             continue
+        raise ValueError(f"Failed to parse the following text as an expression: {s}")
     return stream
 
 

@@ -6,8 +6,7 @@ import re
 from warnings import warn
 from typing import Optional
 
-from . import protocol
-from .unit import ureg
+from . import protocol, ureg
 
 
 operators = ("+", "-", "−", "/", "*", "×", "^", "·")

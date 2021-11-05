@@ -1,3 +1,2 @@
-from .protocol import Protocol, ProtocolData, label_data
+from .protocol import Protocol, ProtocolData, label_data, ureg
 from .parse import read_prune
-from .unit import ureg

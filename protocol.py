@@ -5,10 +5,11 @@ import warnings
 
 # Third-party packages
 import numpy as np
+import pint
 from scipy.optimize import minimize
 
-# Local packages
-from .unit import ureg
+
+ureg = pint.UnitRegistry()
 
 
 def label_data(protocol, data, control_var):

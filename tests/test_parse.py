@@ -1,6 +1,14 @@
 from prunetest import parse
 
 
+def test_is_blank_line():
+    assert parse.is_ws("")
+    assert parse.is_ws("  \n")
+    assert parse.is_ws("  \n\r")
+    assert not parse.is_ws("  abc\n\r")
+    assert not parse.is_ws("abc\n\r")
+
+
 def test_match_unit_blank():
     assert parse.re_unit.match("") is None
     assert parse.re_unit.match(" ") is None

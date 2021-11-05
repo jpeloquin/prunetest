@@ -130,7 +130,7 @@ class Unit(Token):
         return ureg(self.v)
 
 
-class Symbol(Token):
+class Name(Token):
     regex = re.compile(r"^\w+")
 
     @classmethod
@@ -207,11 +207,16 @@ class RelativeTarget(Target):
         return protocol.RelativeTarget(self.value[0].read())
 
 
-def match_blank(s) -> bool:
-    if s == "" or re_ws.match(s):
-        return True
+def is_ws(s) -> bool:
+    return s.strip() == ""
+
+
+def match_ws(s) -> int:
+    """Return length of whitespace at start of text"""
+    if m := re_ws.match(s):
+        return m.end()
     else:
-        return False
+        return 0
 
 
 def match_comment(s) -> bool:
@@ -286,11 +291,11 @@ def parse_expression(s):
             i += m.end()
             return Unit(m.group())
 
-    def match_symbol():
+    def match_name():
         nonlocal i
-        if m := Symbol.match(s[i:]):
+        if m := Name.match(s[i:]):
             i += len(m)
-            return Symbol(m)
+            return Name(m)
 
     def match_ws():
         nonlocal i
@@ -308,14 +313,14 @@ def parse_expression(s):
                 return NumericValue(num)
         if un := match_unary_op():
             # No whitespace may separate the unary operator and its operand
-            if sym := match_symbol():
-                return SymbolicValue(sym, op=un)
+            if name := match_name():
+                return SymbolicValue(name, op=un)
             else:
                 raise ValueError(
                     f"Unary operator `{un}` was not followed by a symbolic reference.  The remaining characters in the problem line were: '{s[i:]}'"
                 )
-        if sym := match_symbol():
-            return SymbolicValue(sym)
+        if name := match_name():
+            return SymbolicValue(name)
 
     stream = []
     while i < len(s):
@@ -349,7 +354,7 @@ def parse_protocol_section(lines):
         elements = []
         i += 1
         while i < len(lines):
-            if match_blank(lines[i]):
+            if is_ws(lines[i]):
                 i += 1
                 continue
             if match_comment(lines[i]):
@@ -429,7 +434,7 @@ def parse_protocol_section(lines):
 
         # Symbol
         skip_ws(s[i:])
-        if m := Symbol.match(s[i:]):
+        if m := Name.match(s[i:]):
             var = m
             i += len(m)
         else:
@@ -463,7 +468,7 @@ def parse_protocol_section(lines):
     protocol = []  # list of ([children], kind, {param: value}) tuples.
     while i < len(lines):
         # Blank line
-        if match_blank(lines[i]):
+        if is_ws(lines[i]):
             i += 1
             continue
         # Comment
@@ -503,16 +508,11 @@ def parse_protocol_section(lines):
 def parse_sections(lines, offset=0):
     sections = {}
     path = []
-    contents = None
-    lines = strip_blank_lines(lines)
-    if not lines[0].startswith("*"):
-        raise ValueError(
-            "Input data does not have a header as its first non-blank line.  Line {}: {}".format(
-                offset + 1, lines[0]
-            )
-        )
-    last_nonblank = None  # "header" or "content"
+    contents = None  # contents of section under last seen header
     for i, ln in enumerate(lines):
+        if is_ws(ln):
+            i += 1
+            continue
         if ln.startswith("*"):  # On header line
             # Tokenize this header
             l, _, k = ln.strip().partition(" ")
@@ -533,7 +533,7 @@ def parse_sections(lines, offset=0):
             # Prepare to store contents of this header
             path = path[: level - 1] + [name]
             contents = None
-        elif contents is None and not ln.isspace():
+        elif contents is None:
             # Found non-blank contents under current header
             contents = []
             contents.append(ln.strip())
@@ -560,7 +560,7 @@ def read_definition(ln):
 def read_default_rates(lines):
     rates = {}
     for ln in lines:
-        if not _is_blank(ln):
+        if not is_ws(ln):
             m = re.match(
                 r"(?P<var>\w+)\((\w+)\)"
                 r"\s*=\s*"
@@ -577,7 +577,7 @@ def read_default_rates(lines):
 def read_reference_state(lines):
     reference_values = {}
     for ln in lines:
-        if not _is_blank(ln):
+        if not is_ws(ln):
             m = re.match(r"(?P<var>\w+)" r"\s*=\s*" r"(?P<expr>[\s\S]+)", ln)
             tokens = parse_expression(m.group("expr"))
             value = ureg.Quantity(to_number(tokens[0].num.v), tokens[0].unit.v)
@@ -585,26 +585,11 @@ def read_reference_state(lines):
     return reference_values
 
 
-def strip_blank_lines(lines):
-    for i0, ln in enumerate(lines):
-        if not ln.isspace():
-            break
-    for i1, ln in enumerate(lines[::-1]):
-        if not ln.isspace():
-            i1 = len(lines) - i1
-            break
-    return lines[i0:i1]
-
-
 def _nested_set(dic, path, value):
     """Set a value in a dictionary at a path of keys"""
     for k in path[:-1]:
         dic = dic.setdefault(k, {})
     dic[path[-1]] = value
-
-
-def _is_blank(s):
-    return s.strip() == ""
 
 
 def read_prune(p):

@@ -697,8 +697,7 @@ def read_default_rates(lines):
                 r"(?P<var>\w+)\((\w+)\)"
                 r"\s*=\s*"
                 r"\w+\(\w+,\s*"
-                r"(?P<rate>[\s\S]+)"
-                r")",
+                r"(?P<rate>[\s\S]+)",
                 ln,
             )
             rate = ureg.parse_expression(m.group("rate"))

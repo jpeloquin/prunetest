@@ -760,7 +760,7 @@ def read_prune(p):
     # Read protocol
     defaults = {}
     defaults["rates"] = read_default_rates(
-        sections["declarations"].get("default interpolation", [])
+        sections["definitions"].get("default interpolation", [])
     )
-    reference_state = read_reference_state(sections["declarations"]["initialization"])
+    reference_state = read_reference_state(sections["definitions"]["initialization"])
     return protocol.Protocol(reference_state, [e.read() for e in p_protocol])

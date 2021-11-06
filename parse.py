@@ -16,10 +16,6 @@ re_un_op = re.compile(r"^-")
 trans_op = ("→", "->")
 re_trans = re.compile(r"^→|->")
 
-re_unit = re.compile(
-    r"(\w|°)+(\s*" f"[{''.join(op for op in operators)}]" r"\s*(\w|°)+)*"
-)
-
 re_ws = re.compile(r"^\s+")
 
 re_num = re.compile(r"-?(\d*\.)?\d+")
@@ -39,8 +35,21 @@ class Token:
     def __init__(self, v):
         self.v = v
 
+    def __eq__(self, s):
+        return str(self) == s
+
+    def __len__(self):
+        return len(self.v)
+
     def __repr__(self):
         return f"{self.__class__.__name__}({self.v!r})"
+
+    def __str__(self):
+        return str(self.v)
+
+
+class ParseError(Exception):
+    pass
 
 
 class Comment(Token):
@@ -126,6 +135,15 @@ class Operator(Token):
 
 
 class Unit(Token):
+    re_unit = re.compile(
+        r"(\w|°)+(\s*" f"[{'|'.join(op for op in operators)}]" "{1}" r"\s*(\w|°)+)*"
+    )
+
+    @classmethod
+    def match(cls, s: str) -> Optional["Unit"]:
+        if m := cls.re_unit.match(s):
+            return cls(m.group())
+
     def read(self):
         return ureg(self.v)
 
@@ -148,6 +166,9 @@ class NumericValue:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.num}, {self.unit!r})"
 
+    def __str__(self):
+        return f"{self.num} {self.unit}"
+
     def read(self):
         return self.num.read() * self.unit.read()
 
@@ -159,6 +180,12 @@ class SymbolicValue:
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.operator or ''}{self.symbol})"
+
+    def __str__(self):
+        s = self.symbol
+        if self.operator is not None:
+            s = self.operator + s
+        return s
 
     def read(self):
         # How do we handle symbolic values?
@@ -174,28 +201,80 @@ class Assignment:
     The right hand side can be an expression, not just a value.
 
     """
+
     def __init__(self, parameter, expression):
         self.parameter = parameter
         self.expression = expression
 
+    def __str__(self):
+        return f"{self.parameter} = {self.expression}"
+
     @classmethod
-    def match(cls, s):
+    def match(cls, s: str) -> Optional["Assignment"]:
+        """Match assignment statement
+
+        `s` must not have leading whitespace.  Characters after the match are ignored.
+
+        """
         name = None
         expr = None
         i = 0
-        i += match_ws(s[i:])
         if m := Name.match(s[i:]):
             i += len(m)
             name = m
         else:
-            return False
+            return None
         i += match_ws(s[i:])
         if not s[i] == "=":
-            return False
+            return None
         i += 1
         i += match_ws(s[i:])
         expr = parse_expression(s[i:])
         return cls(name, expr)
+
+
+class Definition:
+    """Definition; e.g., h [mm] := specimen height"""
+
+    def __init__(self, parameter, unit, description):
+        self.parameter = parameter
+        self.unit = unit
+        self.description = description
+
+    @classmethod
+    def match(cls, s: str) -> Optional["Definition"]:
+        """Match definition statement at start of string up to newline"""
+        i = 0
+        if m := Name.match(s[i:]):
+            name = m
+            i += len(m)
+        else:
+            return None
+        i += match_ws(s[i:])
+        if s[i] == "[":
+            i += 1
+        else:
+            return None
+        if m := Unit.match(s[i:]):
+            unit = m
+            i += len(m)
+        else:
+            return None
+        if s[i] == "]":
+            i += 1
+        else:
+            return None
+        i += match_ws(s[i:])
+        if s[i : i + 2] == ":=":
+            i += 2
+        else:
+            return None
+        i += match_ws(s[i:])
+        newline = s.find("\n")
+        if newline == -1:
+            newline = len(s)
+        description = s[i:newline]
+        return Definition(name, unit, description)
 
 
 # Classes for parsing protocol statements
@@ -282,6 +361,25 @@ def expand_block(elements):
     return expanded
 
 
+def match_section_parameters(lines):
+    definitions = {}
+    values = {}
+    for ln in lines:
+        ln = ln.strip()
+        if ln == "":
+            continue
+        if m := Definition.match(ln):
+            definitions[m.parameter] = m.description
+            continue
+        if m := Assignment.match(ln):
+            values[m.parameter] = m.expression
+            continue
+        raise ParseError(
+            f"Could not parse the following line as part of the 'Parameters' section:\n{ln}"
+        )
+    return definitions, values
+
+
 def parse_expression(s):
     """Return syntax tree for expression"""
     i = 0  # character index; if ≥ len(s), must return immediately
@@ -299,8 +397,8 @@ def parse_expression(s):
             i += 1
             j = s[i:].find(")")
             if j == -1:
-                raise ValueError(
-                    f"Unmatched open parenthesis.  Next 10 characters after unmatch parenthesis were: {s[i:i+10]}"
+                raise ParseError(
+                    f"Unmatched open parenthesis.  Next 10 characters after unmatched parenthesis were: {s[i:i+10]}"
                 )
             group = parse_expression(s[i:j])
             i = i + j + 1
@@ -320,9 +418,9 @@ def parse_expression(s):
 
     def match_unit():
         nonlocal i
-        if m := re_unit.match(s[i:]):
-            i += m.end()
-            return Unit(m.group())
+        if m := Unit.match(s[i:]):
+            i += len(m)
+            return m
 
     def match_name():
         nonlocal i
@@ -349,7 +447,7 @@ def parse_expression(s):
             if name := match_name():
                 return SymbolicValue(name, op=un)
             else:
-                raise ValueError(
+                raise ParseError(
                     f"Unary operator `{un}` was not followed by a symbolic reference.  The remaining characters in the problem line were: '{s[i:]}'"
                 )
         if name := match_name():
@@ -370,8 +468,8 @@ def parse_expression(s):
         if binary := match_binary_op():
             stream.append(Operator(binary))
             continue
-        raise ValueError(f"Failed to parse the following text as an expression: {s}")
-    return stream
+        raise ParseError(f"Failed to parse the following text as an expression: {s}")
+    return Expression(stream)
 
 
 def parse_protocol_section(lines):
@@ -414,7 +512,7 @@ def parse_protocol_section(lines):
                 elif len(rest) == 1:
                     setting = rest[0]
                 else:  # len(rest) > 1
-                    raise ValueError(
+                    raise ParseError(
                         "Keyword instruction in line '{lines[i]}' has too many parts."
                     )
                 i += 1
@@ -431,7 +529,7 @@ def parse_protocol_section(lines):
                 statements.append(statement)
                 i += 1
             else:
-                raise ValueError(
+                raise ParseError(
                     f"The following line is a segment definition but does not contain a valid transition statement: '{lines[i]}'"
                 )
             # Collect subsequent lines belonging to the same segment
@@ -554,9 +652,9 @@ def parse_sections(lines, offset=0):
             name = k.lower()
             # Validation
             if any([a != "*" for a in l]):
-                raise ValueError("Line is not a valid header: {}".format(ln))
+                raise ParseError("Line is not a valid header: {}".format(ln))
             if level > len(path) + 1:
-                raise ValueError(
+                raise ParseError(
                     "Headers skip from level {} to level {}.  Line {}: {}".format(
                         len(path), level, offset + i + 1, ln
                     )
@@ -585,7 +683,7 @@ def read_definition(ln):
     sym = ":="
     i = ln.find(sym)
     if i == -1:
-        raise ValueError("Line is not a 'key := value' definition: {}".format(ln))
+        raise ParseError("Line is not a 'key := value' definition: {}".format(ln))
     k = ln[:i].strip()
     v = ln[i + len(sym) :].strip()
     return k, v
@@ -655,6 +753,8 @@ def read_prune(p):
             metadata[k] = v
     # Read headers and enclosed data
     sections = parse_sections(lines[i:], offset=i)
+    # Read parameters (and their default values)
+    definitions, values = match_section_parameters(sections["definitions"]["parameters"])
     # Parse protocol
     p_protocol = parse_protocol_section(sections["protocol"])
     # Read protocol

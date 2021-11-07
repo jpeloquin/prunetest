@@ -1,4 +1,5 @@
 # Base packages
+import operator
 from collections import OrderedDict, abc
 import sys
 import warnings
@@ -124,6 +125,66 @@ def label_data(protocol, data, control_var):
     return labeled
 
 
+class Expression:
+    """A mathematical expression which may contain symbolic values"""
+
+    pass
+
+
+class UnOp(Expression):
+    fn = {"-": operator.neg, "−": operator.neg}
+
+    def __init__(self, operator, operand):
+        if operator == "-":
+            operator = "−"
+        self.op = operator
+        self.rval = operand
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}('{self.op}', {self.rval!r})"
+
+    def __str__(self):
+        return f"{self.op}{self.rval}"
+
+    def eval(self):
+        return self.fn[self.op](self.rval)
+
+
+class BinOp(Expression):
+    def __init__(self, op, lval, rval):
+        self.op = op
+        self.lval = lval
+        self.rval = rval
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}('{self.op}', {self.lval!r}, {self.rval!r})"
+
+    def __str__(self):
+        return f"{self.lval} {self.op} {self.rval}"
+
+
+class Parameter:
+    def __init__(self, name, unit, value=None):
+        self.name = name
+        self.unit = unit
+        self.value = value
+        if value is not None:
+            try:
+                value.to(unit)
+            except pint.errors.DimensionalityError:
+                raise ValueError(
+                    f"Value of parameter '{name}' has units of '{value.units}', but its definition requires units compatible with '{unit}'."
+                )
+
+    def __str__(self):
+        return f"{self.name} [{self.unit}] = {self.value}"
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}({self.name!r}, {self.unit!r}, {self.value!r})"
+        )
+
+
 class ProtocolData:
     def __init__(self, data, t, protocol, change_points):
         """Construct an object to store protocol labels for a dataset.
@@ -189,7 +250,7 @@ class Target:
         self.value = value
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.value})"
+        return f"{self.__class__.__name__}({self.value!r})"
 
 
 class AbsoluteTarget(Target):

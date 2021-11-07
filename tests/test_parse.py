@@ -16,10 +16,10 @@ def test_match_assignment():
         m = parse.Assignment.match(s)
         assert m is not None
         assert m.parameter == "r"
-        assert len(m.expression) == 1
-        assert isinstance(m.expression[0], parse.NumericValue)
-        assert m.expression[0].num.v == "1"
-        assert m.expression[0].unit.v == "mm"
+        assert len(m.expression.tokens) == 1
+        assert isinstance(m.expression.tokens[0], parse.NumericValue)
+        assert m.expression.tokens[0].num == "1"
+        assert m.expression.tokens[0].unit == "mm"
 
 
 def test_match_definition():

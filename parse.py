@@ -10,8 +10,6 @@ from . import protocol, ureg
 
 
 operators = ("+", "-", "−", "/", "*", "×", "^", "·")
-re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
-re_un_op = re.compile(r"^-")
 
 trans_op = ("→", "->")
 re_trans = re.compile(r"^→|->")
@@ -118,20 +116,9 @@ class Phase:
 # Classes for parsing expressions
 
 
-class BinOp:
-    def __init__(self, op, lval, rval):
-        self.op = op
-        self.lval = lval
-        self.rval = rval
-
-
 class Number(Token):
     def read(self):
         return to_number(self.v)
-
-
-class Operator(Token):
-    pass
 
 
 class Unit(Token):
@@ -145,7 +132,9 @@ class Unit(Token):
             return cls(m.group())
 
     def read(self):
-        return ureg(self.v)
+        # TODO: It would make more sense to read the value and quantity together one
+        #  level above this
+        return ureg.Quantity(self.v).units
 
 
 class Name(Token):
@@ -174,25 +163,126 @@ class NumericValue:
 
 
 class SymbolicValue:
-    def __init__(self, symbol, op=None):
-        self.symbol = symbol
-        self.operator = op
+    def __init__(self, name):
+        self.name = name
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.operator or ''}{self.symbol})"
+        return f"{self.__class__.__name__}({self.name})"
 
     def __str__(self):
-        s = self.symbol
-        if self.operator is not None:
-            s = self.operator + s
-        return s
+        return str(self.name)
 
     def read(self):
         # How do we handle symbolic values?
-        return self
+        return str(self)
+
+
+class UnOp(Token):
+    re_un_op = re.compile(r"^-")
+
+    @classmethod
+    def match(cls, s):
+        if m := cls.re_un_op.match(s):
+            return cls(m.group())
+
+
+class BinOp(Token):
+    re_bin_op = re.compile("^" + "|".join(["\\" + op for op in operators]))
+
+    @classmethod
+    def match(cls, s):
+        if m := cls.re_bin_op.match(s):
+            return cls(m.group())
+
+
+class Expression:
+    def __init__(self, tokens):
+        self.tokens = tokens
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({', '.join(repr(v) for v in self.tokens)})"
+
+    def __str__(self):
+        return " ".join(str(v) for v in self.tokens)
+
+    def read(self):
+        """Evaluate expression, substituting parameters"""
+        stack = []
+        i = 0
+        while i < len(self.tokens):
+            token = self.tokens[i]
+            if hasattr(token, "read"):
+                if i > 0 and hasattr(self.tokens[i - 1], "read"):
+                    raise ValueError(
+                        f"Two values, '{self.tokens[i-1]}' and '{token}', were encountered consecutively with no operator between them."
+                    )
+                stack.append(token.read())
+                i += 1
+            if isinstance(token, UnOp) or isinstance(token, BinOp):
+                if len(self.tokens) <= i + 1:
+                    raise ValueError(f"Found operator {token} with no following value.")
+                rtoken = self.tokens[i + 1]
+                rval = rtoken.read()
+                if isinstance(token, UnOp):
+                    # If the operand is numeric, apply the operator now
+                    un = protocol.UnOp(str(token), rval)
+                    if isinstance(rtoken, NumericValue):
+                        stack.append(un.eval())
+                    else:
+                        stack.append(un)
+                else:
+                    lval = stack.pop()
+                    stack.append(protocol.BinOp(str(token), lval, rval))
+                i += 2
+        if len(stack) > 1:
+            raise Exception
+        return stack[0]
 
 
 # Classes for parsing parameter definitions and assignments
+
+
+class ParametersSection:
+    """Representation of Parameters section"""
+
+    def __init__(self, definitions, values):
+        self.definitions = definitions
+        self.values = values
+        for p, v in values.items():
+            if p not in definitions:
+                raise ParseError(
+                    f"Parameter '{p}' has the value '{v}' but no definition."
+                )
+
+    @classmethod
+    def match(cls, lines):
+        definitions = {}
+        values = {}
+        for ln in lines:
+            ln = ln.strip()
+            if ln == "":
+                continue
+            if m := Definition.match(ln):
+                definitions[m.parameter] = m
+                continue
+            if m := Assignment.match(ln):
+                values[m.parameter] = m.expression
+                continue
+            raise ParseError(
+                f"Could not parse the following line as part of the 'Parameters' section:\n{ln}"
+            )
+        return cls(definitions, values)
+
+    def read(self):
+        parameters = {}
+        for p, d in self.definitions.items():
+            if p in self.values:
+                value = self.values[p].read()
+            else:
+                value = None
+            unit = d.unit.read()
+            parameters[p] = protocol.Parameter(p, unit, value)
+        return parameters
 
 
 class Assignment:
@@ -309,14 +399,12 @@ class Target:
 
 class AbsoluteTarget(Target):
     def read(self):
-        # For now, require simple expressions as targets
-        return protocol.AbsoluteTarget(self.value[0].read())
+        return protocol.AbsoluteTarget(self.value.read())
 
 
 class RelativeTarget(Target):
     def read(self):
-        # For now, require simple expressions as targets
-        return protocol.RelativeTarget(self.value[0].read())
+        return protocol.RelativeTarget(self.value.read())
 
 
 def is_ws(s) -> bool:
@@ -361,34 +449,15 @@ def expand_block(elements):
     return expanded
 
 
-def match_section_parameters(lines):
-    definitions = {}
-    values = {}
-    for ln in lines:
-        ln = ln.strip()
-        if ln == "":
-            continue
-        if m := Definition.match(ln):
-            definitions[m.parameter] = m.description
-            continue
-        if m := Assignment.match(ln):
-            values[m.parameter] = m.expression
-            continue
-        raise ParseError(
-            f"Could not parse the following line as part of the 'Parameters' section:\n{ln}"
-        )
-    return definitions, values
-
-
 def parse_expression(s):
     """Return syntax tree for expression"""
     i = 0  # character index; if ≥ len(s), must return immediately
 
     def match_binary_op():
         nonlocal i
-        if m := re_bin_op.match(s[i:]):
-            i += m.end()
-            return Operator(m.group())
+        if m := BinOp.match(s[i:]):
+            i += len(m)
+            return m
 
     def match_group():
         nonlocal i
@@ -412,9 +481,9 @@ def parse_expression(s):
 
     def match_unary_op():
         nonlocal i
-        if m := re_un_op.match(s[i:]):
-            i += m.end()
-            return m.group()
+        if m := UnOp.match(s[i:]):
+            i += len(m)
+            return m
 
     def match_unit():
         nonlocal i
@@ -442,14 +511,6 @@ def parse_expression(s):
                 return NumericValue(num, unit)
             else:
                 return NumericValue(num)
-        if un := match_unary_op():
-            # No whitespace may separate the unary operator and its operand
-            if name := match_name():
-                return SymbolicValue(name, op=un)
-            else:
-                raise ParseError(
-                    f"Unary operator `{un}` was not followed by a symbolic reference.  The remaining characters in the problem line were: '{s[i:]}'"
-                )
         if name := match_name():
             return SymbolicValue(name)
 
@@ -459,14 +520,22 @@ def parse_expression(s):
         if i == len(s):
             # Have to break manually if everything left was whitespace.
             break
+        if un := match_unary_op():
+            stream.append(un)
+            if group := match_group():
+                stream.append(group)
+                continue
+            if value := match_value():
+                stream.append(value)
+                continue
+        if m := match_binary_op():
+            stream.append(m)
+            continue
         if group := match_group():
-            stream.append(tuple(group))
+            stream.append(group)
             continue
         if value := match_value():
             stream.append(value)
-            continue
-        if binary := match_binary_op():
-            stream.append(Operator(binary))
             continue
         raise ParseError(f"Failed to parse the following text as an expression: {s}")
     return Expression(stream)
@@ -586,9 +655,9 @@ def parse_protocol_section(lines):
             relative = False
         # Target
         skip_ws(s[i:])
+        # An expression is a terminal statement
         if m := parse_expression(s[i:]):
             expr = m
-            i += len(expr)
         else:
             return None
         if relative:
@@ -710,9 +779,8 @@ def read_reference_state(lines):
     for ln in lines:
         if not is_ws(ln):
             m = re.match(r"(?P<var>\w+)" r"\s*=\s*" r"(?P<expr>[\s\S]+)", ln)
-            tokens = parse_expression(m.group("expr"))
-            value = ureg.Quantity(to_number(tokens[0].num.v), tokens[0].unit.v)
-            reference_values[m.group("var")] = value
+            expr = parse_expression(m.group("expr"))
+            reference_values[m.group("var")] = expr.read()
     return reference_values
 
 
@@ -753,7 +821,7 @@ def read_prune(p):
     # Read headers and enclosed data
     sections = parse_sections(lines[i:], offset=i)
     # Read parameters (and their default values)
-    definitions, values = match_section_parameters(sections["definitions"]["parameters"])
+    parameters = ParametersSection.match(sections["definitions"]["parameters"]).read()
     # Parse protocol
     p_protocol = parse_protocol_section(sections["protocol"])
     # Read protocol

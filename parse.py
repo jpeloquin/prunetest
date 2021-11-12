@@ -4,7 +4,7 @@ import re
 
 # Local packages
 from warnings import warn
-from typing import Optional
+from typing import Dict, Optional
 
 from . import protocol, ureg
 
@@ -30,20 +30,20 @@ def to_number(s):
 
 
 class Token:
-    def __init__(self, v):
-        self.v = v
+    def __init__(self, text):
+        self.text = text
 
     def __eq__(self, s):
         return str(self) == s
 
     def __len__(self):
-        return len(self.v)
+        return len(self.text)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.v!r})"
+        return f"{self.__class__.__name__}({self.text!r})"
 
     def __str__(self):
-        return str(self.v)
+        return str(self.text)
 
 
 class ParseError(Exception):
@@ -118,7 +118,7 @@ class Phase:
 
 class Number(Token):
     def read(self):
-        return to_number(self.v)
+        return to_number(self.text)
 
 
 class Unit(Token):
@@ -134,7 +134,7 @@ class Unit(Token):
     def read(self):
         # TODO: It would make more sense to read the value and quantity together one
         #  level above this
-        return ureg.Quantity(self.v).units
+        return ureg.Quantity(self.text).units
 
 
 class Name(Token):
@@ -159,7 +159,7 @@ class NumericValue:
         return f"{self.num} {self.unit}"
 
     def read(self):
-        return self.num.read() * self.unit.read()
+        return protocol.Quantity(self.num.read(), self.unit.read())
 
 
 class SymbolicValue:
@@ -173,8 +173,9 @@ class SymbolicValue:
         return str(self.name)
 
     def read(self):
-        # How do we handle symbolic values?
-        return str(self)
+        # Note: SymbolicValue assumes that the name refers to a parameter; at least,
+        # it did when this comment was written.
+        return protocol.SymbolicValue(self.name)
 
 
 class UnOp(Token):
@@ -205,8 +206,13 @@ class Expression:
     def __str__(self):
         return " ".join(str(v) for v in self.tokens)
 
-    def read(self):
-        """Evaluate expression, substituting parameters"""
+    def read(self, parameters: Dict[str, protocol.Parameter] = None):
+        """Evaluate expression, substituting parameters
+
+        :param parameters: Mapping from names to declared parameters in the form of
+        Parameter objects.
+
+        """
         stack = []
         i = 0
         while i < len(self.tokens):
@@ -512,7 +518,7 @@ def parse_expression(s):
             else:
                 return NumericValue(num)
         if name := match_name():
-            return SymbolicValue(name)
+            return SymbolicValue(name.text)
 
     stream = []
     while i < len(s):
@@ -830,4 +836,6 @@ def read_prune(p):
         sections["definitions"].get("default interpolation", [])
     )
     reference_state = read_reference_state(sections["definitions"]["initialization"])
-    return protocol.Protocol(reference_state, [e.read() for e in p_protocol])
+    return protocol.Protocol(
+        reference_state, [e.read() for e in p_protocol], parameters
+    )

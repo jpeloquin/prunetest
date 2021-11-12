@@ -5,6 +5,8 @@ import sys
 import warnings
 
 # Third-party packages
+from typing import Dict, Iterable, List, Optional, Union
+
 import numpy as np
 import pint
 from scipy.optimize import minimize
@@ -128,7 +130,8 @@ def label_data(protocol, data, control_var):
 class Expression:
     """A mathematical expression which may contain symbolic values"""
 
-    pass
+    def eval(self, parameters=None):
+        raise NotImplementedError
 
 
 class UnOp(Expression):
@@ -146,11 +149,22 @@ class UnOp(Expression):
     def __str__(self):
         return f"{self.op}{self.rval}"
 
-    def eval(self):
-        return self.fn[self.op](self.rval)
+    def eval(self, parameters=None):
+        return self.fn[self.op](self.rval.eval(parameters))
 
 
 class BinOp(Expression):
+    fn = {
+        "+": operator.add,
+        "-": operator.sub,
+        "−": operator.sub,
+        "/": operator.truediv,
+        "*": operator.mul,
+        "×": operator.mul,
+        "·": operator.mul,
+        "^": operator.pow,
+    }
+
     def __init__(self, op, lval, rval):
         self.op = op
         self.lval = lval
@@ -161,6 +175,9 @@ class BinOp(Expression):
 
     def __str__(self):
         return f"{self.lval} {self.op} {self.rval}"
+
+    def eval(self, parameters=None):
+        return self.fn[self.op](self.lval.eval(parameters), self.rval.eval(parameters))
 
 
 class Parameter:
@@ -245,30 +262,67 @@ class InitialState:
         return self._state[k]
 
 
-class Target:
+class Quantity(ureg.Quantity):
+    """A literal value, with no parameters
+
+    The Constant class exists so that other classes can call eval() indiscriminately,
+    without testing if a particular value is parameterized or not.
+
+    """
+
+    def eval(self, *args, **kwargs):
+        return self
+
+
+class SymbolicValue:
+    """A symbolic value to be substituted with a literal value during evaluation"""
+
+    def __init__(self, name):
+        self.name = name
+
+    def eval(self, parameters: dict):
+        if parameters is None:
+            raise ValueError(
+                "eval() was called on a symbolic value but no parameters were provided."
+            )
+        return parameters[self.name].eval()
+
+
+class AbsoluteTarget:
+    def __init__(self, value: Union[Quantity, SymbolicValue, Expression]):
+        self._value = value
+
+    def __str__(self):
+        return f"{self._value}"
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self._value!r})"
+
+    def eval(self, parameters=None):
+        return self._value.eval(parameters)
+
+
+class RelativeTarget:
     def __init__(self, value):
         self.value = value
+
+    def __str__(self):
+        return f"+ {self.value}"
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.value!r})"
 
-
-class AbsoluteTarget(Target):
-    def __str__(self):
-        return f"{self.value}"
-
-
-class RelativeTarget(Target):
-    # Should the relative target store a reference to the prior state?
-    # If not, the absolute target can only be resolved by walking a
-    # sequence of (state, segment, …).  That's true regardless but the
-    # interface could hide the fact.
-    def __str__(self):
-        return f"+ {self.value}"
+    def eval(self, initial_value, parameters=None):
+        return initial_value + self.value.eval(parameters)
 
 
 class Transition:
-    def __init__(self, variable: str, target: Target, path="linear"):
+    def __init__(
+        self,
+        variable: str,
+        target: Union[AbsoluteTarget, RelativeTarget],
+        path="linear",
+    ):
         self.variable = variable
         self.target = target
         self.path = path
@@ -281,7 +335,7 @@ class Transition:
 
 
 class Segment:
-    def __init__(self, transitions: list[Transition]):
+    def __init__(self, transitions: List[Transition]):
         """Return Segment object"""
         self.transitions = {t.variable: t for t in transitions}
 
@@ -293,14 +347,18 @@ class Segment:
         """Return list of this segment's controlled variables"""
         return set(self.transitions.keys())
 
-    def eval(self, variable, value, initial_state):
+    def eval_state(
+        self, variable: str, value: Quantity, initial_state: dict, parameters=None
+    ):
         """Return succession of states at an independent variable's values
 
         The independent variable must be strictly monotonically increasing.
         Typically the independent variable is time or pseudo-time.
 
         """
-        # TODO: How do I want to handle relative vs. absolute targets for eval?
+        if parameters is None:
+            parameters = {}
+        # TODO: How do I want to handle relative vs. absolute target_state for eval?
         # Initialize evaluated state
         state = {var: None for var in self.transitions}
         state[variable] = value
@@ -312,23 +370,32 @@ class Segment:
             v0 = initial_state[variable]
         except KeyError:
             raise ValueError(f"Variable '{variable}' not in provided initial state.")
-        v1 = trans.target.value
+        # TODO: refactor this to not have to switch call signatures
+        if isinstance(trans.target, AbsoluteTarget):
+            v1 = trans.target.eval(parameters)
+        elif isinstance(trans.target, RelativeTarget):
+            v1 = trans.target.eval(v0, parameters)
         if trans.path == "linear":
             # Define pseudo-time s; 0 ≤ s ≤ 1, where s = 0 is the start of the segment
             # and s = 1 is the end.
-            s_crit = (value - v0) / (v1 - v0.m)
-            for var in self.transitions:
-                if var == variable:
-                    # Already handled the abscissa
-                    continue
-                v0 = initial_state[var]
-                v1 = self.transitions[var].target
-                state[var] = s_crit * (v1 - v0)
+            s_crit = ((value - v0) / (v1 - v0)).m
         else:
             raise NotImplementedError
+        for var, trans in self.transitions.items():
+            if var == variable:
+                # Already handled the abscissa
+                continue
+            v0 = initial_state[var]
+            # TODO: refactor this to not have to switch call signatures
+            if isinstance(trans.target, AbsoluteTarget):
+                v1 = trans.target.eval(parameters)
+                Δ = v1 - v0
+            elif isinstance(trans.target, RelativeTarget):
+                Δ = trans.target.value.eval(parameters)
+            state[var] = v0 + s_crit * Δ
         return state
 
-    def targets(self, initial_state):
+    def target_state(self, initial_state, parameters=None):
         """Return target state for all variables
 
         `target` is basically an `eval` that returns the segment's final state.  As
@@ -339,70 +406,16 @@ class Segment:
 
         """
         state = {}
-        for t in self.transitions:
-            if isinstance(t, AbsoluteTarget):
-                state[t.variable] = t.target.value
+        for t in self.transitions.values():
+            if isinstance(t.target, AbsoluteTarget):
+                state[t.variable] = t.target.eval(parameters)
+            elif isinstance(t.target, RelativeTarget):
+                state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
             else:
-                state[t.variable] = t.target.value + initial_state[t.variable]
-        return state
-
-
-class LinearSegment:
-
-    # Delete this class as soon as the new Segment class has working eval and target
-    # methods.
-
-    def __init__(self, previous=None):
-        self.channel = ""
-        self.target = None
-        self.rate = None
-        self.previous = previous
-
-    @classmethod
-    def from_intermediate(cls, struct, previous=None):
-        segment = cls(previous)
-        segment.channel = struct[1]["channel"]
-        segment.target = struct[1]["target"]
-        segment.rate = struct[1]["rate"]
-        return segment
-
-    @property
-    def end_state(self):
-        return {self.channel: self.target}
-
-    @property
-    def duration(self):
-        try:
-            initial = self.previous.end_state[self.channel]
-        except KeyError:
-            return 0
-        change = self.target - initial
-        duration = abs(change) / self.rate
-        return duration.to("s").m
-
-    def evaluate(self, t):
-        """Eval segment at relative time t.
-
-        Returns dict with channels as keys.  Values are None if the
-        channel is free.
-
-        """
-        # But if the segment is supposed to have values defined relative
-        # to the previous segment, how can eval figure out what the
-        # absolute values should be?
-        if isinstance(t, str):
-            t = ureg.parse_expression(t)
-        eps = 2 * sys.float_info.epsilon / self.rate.m
-        initial = self.previous.end_state[self.channel]
-        change = self.target - initial
-        duration = abs(change) / self.rate
-        if t >= duration * (1 + eps):
-            raise (
-                ValueError(
-                    "t = {} > {}; t exceeds the segment's duration.".format(t, duration)
+                raise ValueError(
+                    "Transition target should be an AbsoluteTarget or a RelativeTarget"
                 )
-            )
-        return initial + t / duration * change
+        return state
 
 
 class Block:
@@ -460,7 +473,10 @@ class Phase:
 
 
 class Protocol:
-    def __init__(self, initial_state, elements):
+    def __init__(self, initial_state, elements, parameters: Optional[dict] = None):
+        if parameters is None:
+            parameters = {}
+        self.parameters = parameters
         # Make the protocol data immutable-ish
         self.initial_state = initial_state
         self.elements = tuple(elements)
@@ -485,9 +501,9 @@ class Protocol:
                         self.phase_of_block[e] = phase
             # Outside of any phase
             if isinstance(element, Segment):
-                self.phase_of_segment[e] = None
+                self.phase_of_segment[element] = None
             if isinstance(element, Block):
-                self.phase_of_block[e] = None
+                self.phase_of_block[element] = None
 
     def __repr__(self):
         return f"{self.__class__}({self.initial_state}, {self.elements})"
@@ -516,7 +532,10 @@ class Protocol:
                 segments += part.segments
         return segments
 
-    def eval(self, variable: str, values):
+    def eval_state(self, variable: str, value: Quantity):
+        return self.eval_states(variable, [value])[0]
+
+    def eval_states(self, variable: str, values: Iterable[Quantity]):
         """Return succession of states at an independent variable's values
 
         :param variable: The independent variable which has values at which the
@@ -537,21 +556,27 @@ class Protocol:
         last_state = self.initial_state
         while i < len(values):
             value = values[i]
+            # Check if the abscissa value is in the initial state
+            if value == self.initial_state[variable]:
+                states.append(self.initial_state)
+                i += 1
+                continue
+            # Find the segment containing the abscissa value
             while j < len(segments):
                 segment = segments[j]
                 t0 = last_state[variable]
-                next_state = segment.targets(initial_state=last_state)
+                next_state = segment.target_state(
+                    initial_state=last_state, parameters=self.parameters
+                )
                 t1 = next_state[variable]
                 if t0 < value < t1:
-                    s = segment.eval(variable, value, last_state)
-                    states.append(s)
+                    state = segment.eval_state(
+                        variable, value, last_state, self.parameters
+                    )
                     i += 1
-                    break
                 elif value == t1:
-                    # Special case when abscissa is at the end of a segment so we get
-                    # exact values.
-                    states.append(next_state)
-                    break
+                    # Abscissa is at the end of a segment; get exact values
+                    state = next_state
                 elif value <= t0:
                     raise ValueError(
                         f"Provided values of {variable} are not monotonically increasing"
@@ -559,5 +584,10 @@ class Protocol:
                 else:
                     # independent variable value not in this segment; check next segment
                     j += 1
+                    last_state = next_state
                     continue
+                # TODO: Found state; ensure all variables are present
+                states.append(state)
+                break
+            i += 1
         return tuple(states)

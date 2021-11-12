@@ -486,8 +486,8 @@ class Protocol:
         self.phase_dict = OrderedDict()
 
         # Create membership maps
-        self.phase_of_segment = {}
-        self.phase_of_block = {}
+        self.phase_of_segment: Dict[Segment, Optional[Phase]] = {}
+        self.phase_of_block: Dict[Segment, Optional[Block]] = {}
         for element in self.elements:
             if isinstance(element, Phase):
                 phase = element

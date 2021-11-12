@@ -47,6 +47,7 @@ def test_match_unit_blank():
 
 
 def test_match_unit_bare_op():
+    """Unit should not match a bare operator"""
     for op in parse.operators:
         assert parse.Unit.match(op) is None
 
@@ -69,12 +70,6 @@ def test_match_unit_trailing_characters():
     """Unit should ignore trailing characters"""
     assert (m := parse.Unit.match("x foo")) is not None
     assert m == "x"
-
-
-def test_match_unit_bare_op():
-    """Unit should not match a bare operator"""
-    assert parse.Unit.match("/") is None
-
 
 def test_match_unit_internal_op():
     assert (m := parse.Unit.match("mm/s")) is not None

@@ -470,13 +470,24 @@ def parse_expression(s):
         if s[i] == "(":
             # Open group
             i += 1
-            j = s[i:].find(")")
-            if j == -1:
+            open_paren = i
+            open = 1
+            while i < len(s):
+                if s[i] == "(":
+                    open += 1
+                elif s[i] == ")":
+                    open -= 1
+                if open == 0:
+                    close_paren = i
+                    i += 1
+                    break
+                else:
+                    i += 1
+            else:
                 raise ParseError(
-                    f"Unmatched open parenthesis.  Next 10 characters after unmatched parenthesis were: {s[i:i+10]}"
+                    f"Unmatched open parenthesis.  Next 20 characters after unmatched parenthesis were: {s[i:i+20]}"
                 )
-            group = parse_expression(s[i:j])
-            i = i + j + 1
+            group = parse_expression(s[open_paren:close_paren])
             return group
 
     def match_number():
@@ -528,20 +539,24 @@ def parse_expression(s):
             break
         if un := match_unary_op():
             stream.append(un)
+            # Unary operator must be adjacent to operand
             if group := match_group():
                 stream.append(group)
                 continue
             if value := match_value():
                 stream.append(value)
                 continue
-        if m := match_binary_op():
+        if m := match_group():
             stream.append(m)
+            match_ws()
+            if m := match_binary_op():
+                stream.append(m)
             continue
-        if group := match_group():
-            stream.append(group)
-            continue
-        if value := match_value():
-            stream.append(value)
+        if m := match_value():
+            stream.append(m)
+            match_ws()
+            if m := match_binary_op():
+                stream.append(m)
             continue
         raise ParseError(f"Failed to parse the following text as an expression: {s}")
     return Expression(stream)

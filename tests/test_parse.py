@@ -39,6 +39,9 @@ def test_match_definition():
     assert m.description == "Radius"
 
 
+# Test parsing of units
+
+
 def test_match_unit_blank():
     """Unit should not match whitespace"""
     assert parse.Unit.match("") is None
@@ -70,6 +73,7 @@ def test_match_unit_trailing_characters():
     """Unit should ignore trailing characters"""
     assert (m := parse.Unit.match("x foo")) is not None
     assert m == "x"
+
 
 def test_match_unit_internal_op():
     assert (m := parse.Unit.match("mm/s")) is not None
@@ -114,3 +118,11 @@ def test_match_unit_frequency():
 def test_match_unit_permeability():
     assert (m := parse.Unit.match("N·s/mm^4")) is not None
     assert m == "N·s/mm^4"
+
+
+# TODO: Test parsing of expressions
+
+# 1 + (a + b)
+# (a + b) - 1
+# (1 + 1)
+# 1 + (a + (1 - b))

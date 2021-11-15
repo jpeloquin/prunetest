@@ -296,20 +296,6 @@ class SymbolicValue:
         return parameters[self.name].eval()
 
 
-class AbsoluteTarget:
-    def __init__(self, value: Union[Quantity, SymbolicValue, Expression]):
-        self._value = value
-
-    def __str__(self):
-        return f"{self._value}"
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self._value!r})"
-
-    def eval(self, parameters=None):
-        return self._value.eval(parameters)
-
-
 class RelativeTarget:
     def __init__(self, value):
         self.value = value
@@ -328,7 +314,7 @@ class Transition:
     def __init__(
         self,
         variable: str,
-        target: Union[Q, RelativeTarget],
+        target: Union[Q, Expression, RelativeTarget],
         path="linear",
     ):
         self.variable = variable
@@ -377,10 +363,10 @@ class Segment:
         except KeyError:
             raise ValueError(f"Variable '{variable}' not in provided initial state.")
         # TODO: refactor this to not have to switch call signatures
-        if isinstance(trans.target, AbsoluteTarget):
-            v1 = trans.target.eval(parameters)
-        elif isinstance(trans.target, RelativeTarget):
+        if isinstance(trans.target, RelativeTarget):
             v1 = trans.target.eval(v0, parameters)
+        else:
+            v1 = trans.target.eval(parameters)
         if trans.path == "linear":
             # Define pseudo-time s; 0 ≤ s ≤ 1, where s = 0 is the start of the segment
             # and s = 1 is the end.
@@ -393,11 +379,11 @@ class Segment:
                 continue
             v0 = initial_state[var]
             # TODO: refactor this to not have to switch call signatures
-            if isinstance(trans.target, AbsoluteTarget):
+            if isinstance(trans.target, RelativeTarget):
+                Δ = trans.target.value.eval(parameters)
+            else:
                 v1 = trans.target.eval(parameters)
                 Δ = v1 - v0
-            elif isinstance(trans.target, RelativeTarget):
-                Δ = trans.target.value.eval(parameters)
             state[var] = v0 + s_crit * Δ
         return state
 
@@ -413,14 +399,11 @@ class Segment:
         """
         state = {}
         for t in self.transitions.values():
-            if isinstance(t.target, AbsoluteTarget):
-                state[t.variable] = t.target.eval(parameters)
-            elif isinstance(t.target, RelativeTarget):
+            if isinstance(t.target, RelativeTarget):
                 state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
             else:
-                raise ValueError(
-                    "Transition target should be an AbsoluteTarget or a RelativeTarget"
-                )
+                # Absolute target
+                state[t.variable] = t.target.eval(parameters)
         return state
 
 

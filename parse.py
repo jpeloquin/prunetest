@@ -400,7 +400,7 @@ class Target:
 
 class AbsoluteTarget(Target):
     def read(self):
-        return protocol.AbsoluteTarget(self.value.read())
+        return self.value.read()
 
 
 class RelativeTarget(Target):

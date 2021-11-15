@@ -2,7 +2,6 @@ from math import isclose
 
 from prunetest import Protocol, Segment, Q
 from prunetest.protocol import (
-    AbsoluteTarget,
     BinOp,
     RelativeTarget,
     SymbolicValue,
@@ -17,7 +16,7 @@ segments = [
             Transition("t", Q(10, "s")),
             Transition(
                 "εz",
-                AbsoluteTarget(BinOp("*", Q(0.9), SymbolicValue("ε_swell"))),
+                BinOp("*", Q(0.9), SymbolicValue("ε_swell")),
             ),
         ]
     ),

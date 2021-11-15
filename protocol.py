@@ -201,6 +201,9 @@ class Parameter:
             f"{self.__class__.__name__}({self.name!r}, {self.unit!r}, {self.value!r})"
         )
 
+    def eval(self):
+        return self.value
+
 
 class ProtocolData:
     def __init__(self, data, t, protocol, change_points):

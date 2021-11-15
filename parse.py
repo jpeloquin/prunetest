@@ -159,7 +159,7 @@ class NumericValue:
         return f"{self.num} {self.unit}"
 
     def read(self):
-        return protocol.Quantity(self.num.read(), self.unit.read())
+        return protocol.Q(self.num.read(), self.unit.read())
 
 
 class SymbolicValue:

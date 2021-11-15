@@ -262,11 +262,16 @@ class InitialState:
         return self._state[k]
 
 
-class Quantity(ureg.Quantity):
+class Q(ureg.Quantity):
     """A literal value, with no parameters
 
-    The Constant class exists so that other classes can call eval() indiscriminately,
-    without testing if a particular value is parameterized or not.
+    This class exists for two reasons:
+
+    (1) ureg.Quantity does not have an eval() method, but we want other classes to be
+    able to call eval() on any value, without testing if it is parameterized or not.
+
+    (2) Q is shorter than Quantity, and users will type it a lot if they use the
+    Python interface.
 
     """
 
@@ -320,7 +325,7 @@ class Transition:
     def __init__(
         self,
         variable: str,
-        target: Union[AbsoluteTarget, RelativeTarget],
+        target: Union[Q, RelativeTarget],
         path="linear",
     ):
         self.variable = variable
@@ -347,9 +352,7 @@ class Segment:
         """Return list of this segment's controlled variables"""
         return set(self.transitions.keys())
 
-    def eval_state(
-        self, variable: str, value: Quantity, initial_state: dict, parameters=None
-    ):
+    def eval_state(self, variable: str, value: Q, initial_state: dict, parameters=None):
         """Return succession of states at an independent variable's values
 
         The independent variable must be strictly monotonically increasing.
@@ -532,10 +535,10 @@ class Protocol:
                 segments += part.segments
         return segments
 
-    def eval_state(self, variable: str, value: Quantity):
+    def eval_state(self, variable: str, value: Q):
         return self.eval_states(variable, [value])[0]
 
-    def eval_states(self, variable: str, values: Iterable[Quantity]):
+    def eval_states(self, variable: str, values: Iterable[Q]):
         """Return succession of states at an independent variable's values
 
         :param variable: The independent variable which has values at which the

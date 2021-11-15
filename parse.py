@@ -206,13 +206,8 @@ class Expression:
     def __str__(self):
         return " ".join(str(v) for v in self.tokens)
 
-    def read(self, parameters: Dict[str, protocol.Parameter] = None):
-        """Evaluate expression, substituting parameters
-
-        :param parameters: Mapping from names to declared parameters in the form of
-        Parameter objects.
-
-        """
+    def read(self):
+        """Evaluate expression, substituting parameters"""
         stack = []
         i = 0
         while i < len(self.tokens):

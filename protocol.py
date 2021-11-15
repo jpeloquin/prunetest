@@ -543,14 +543,15 @@ class Protocol:
         segments = self.segments
         j = 0  # index into segments
         last_state = self.initial_state
-        while i < len(values):
-            value = values[i]
+        for value in values:
             # Check if the abscissa value is in the initial state
             if value == self.initial_state[variable]:
                 states.append(self.initial_state)
                 i += 1
                 continue
-            # Find the segment containing the abscissa value
+            # Find the segment containing the abscissa (given value).  Note that j is
+            # carried over from abscissa to abscissa; this is why they must be
+            # provided in monotonically increasing order.
             while j < len(segments):
                 segment = segments[j]
                 t0 = last_state[variable]
@@ -562,7 +563,6 @@ class Protocol:
                     state = segment.eval_state(
                         variable, value, last_state, self.parameters
                     )
-                    i += 1
                 elif value == t1:
                     # Abscissa is at the end of a segment; get exact values
                     state = next_state
@@ -578,5 +578,4 @@ class Protocol:
                 # TODO: Found state; ensure all variables are present
                 states.append(state)
                 break
-            i += 1
         return tuple(states)

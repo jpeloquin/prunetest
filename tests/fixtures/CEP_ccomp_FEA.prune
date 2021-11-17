@@ -1,0 +1,104 @@
+Title := Harrah's CEP confined compression protocol
+Author := John Peloquin <peloquin@udel.edu>
+Author := Harrah Newman <harrah@udel.edu>
+Date last modified := 2021-09-27
+Date created := 2021-09-27
+
+
+* NOTES
+
+** Description
+
+FEA simulation protocol meant to represent Harrah's confined compression tests of intervertebral disc (IVD) cartilaginous endplate (CEP).
+The specimen is cylindrical, with a central axis normal to the plane of the CEP at the sampling site.
+
+** Test environment
+
+PBS bath, room temperature.
+
+
+* DEFINITIONS
+
+** Coordinate system
+
+# Cartesian coordinates
+x [mm] := In-plane axis
+y [mm] := In-plane axis, perpendicular to x
+z [mm] := Through-thickness axis
+
+** Parameters
+
+r [mm] := Radius of the cylinder at start of compression.
+r = 4 mm
+
+h [mm] := Height of the cylinder at start of compression.
+h = 1.1 mm
+
+f_swell [1] := Engineering z-strain in the initial state divided by engineering z-strain in free swelling equilibrium.
+f_swell = 0.5
+
+λ_freeswell [1] := Free swelling stretch ratio, relative to elastic reference state (zero elastic stress).  That is, the stretch ratio (assumed isotropic) that would result from free swelling in 0.15 M PBS.
+λ_freeswell = 1.16
+
+** Variables
+
+t [s] := Time
+f_FCD [1] := Instantiated fraction of material's FCD.
+f_k0 [1] := Instantiated fraction of material's k0 permeability parameter.
+λx [1] := Stretch ratio in x-direction, relative to start of compression.
+λy [1] := Stretch ratio in y-direction, relative to start of compression.
+λz [1] := Stretch ratio in z-direction, relative to start of compression.
+Rz [N] := Force applied to top face of specimen.
+
+** Initialization
+
+t = 0 s
+f_FCD = 0
+f_k0 = 0
+λx = 1
+λy = 1
+λz = 1
+Rz = 0 N
+
+* PROTOCOL
+
+set-default f_FCD hold
+set-default f_k0 hold
+
+phase "setup"
+
+# Apply prestretch
+| t → +1 s  # This isn't being read correctly
+  λx → 1 + (f_swell * (λ_freeswell - 1))
+  λy → 1 + (f_swell * (λ_freeswell - 1))
+  λz → 1 + (f_swell * (λ_freeswell - 1))
+
+fix λx hold
+fix λy hold
+set-default λz hold
+
+# Initialize FCD
+| t → +1 s
+  f_FCD → 1
+
+# Make sure isometric swelling has equilibrated
+| t → +1 s
+  f_k0 → 1
+
+
+phase "compression"
+
+# Ramp and hold 1
+| λz → 0.9
+  t → + 300 s
+| t → + 4000 s
+
+# Ramp and hold 2
+| λz → 0.8
+  t → + 300 s
+| t → + 6000 s
+
+# Ramp and hold 3
+| λz → 0.7
+  t → + 300 s
+| t → + 8000 s

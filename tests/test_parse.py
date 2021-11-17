@@ -19,7 +19,7 @@ def test_match_assignment():
         assert len(m.expression.tokens) == 1
         assert isinstance(m.expression.tokens[0], parse.NumericValue)
         assert m.expression.tokens[0].num == "1"
-        assert m.expression.tokens[0].unit == "mm"
+        assert m.expression.tokens[0].units == "mm"
 
 
 def test_match_definition():
@@ -28,14 +28,14 @@ def test_match_definition():
     m = parse.Definition.match(s)
     assert m is not None
     assert m.parameter == "f_swell"
-    assert m.unit == "1"
+    assert m.units == "1"
     assert m.description == "Free swelling stretch ratio"
     # Example 2
     s = r"r [mm] := Radius"
     m = parse.Definition.match(s)
     assert m is not None
     assert m.parameter == "r"
-    assert m.unit == "mm"
+    assert m.units == "mm"
     assert m.description == "Radius"
 
 

@@ -1,11 +1,9 @@
 # Base packages
 import operator
 from collections import OrderedDict, abc
-import sys
-import warnings
 
 # Third-party packages
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Dict, Iterable, List, NewType, Optional, Union
 
 import numpy as np
 import pint
@@ -13,6 +11,25 @@ from scipy.optimize import minimize
 
 
 ureg = pint.UnitRegistry()
+
+
+class ControlConflictError(ValueError):
+    def __init__(self, var, msg):
+        msg = f"Control conflict for variable '{var}': {msg}"
+        super().__init__(msg)
+
+
+def iter_expanded(elements):
+    """Return iterator over instructions and segments, expanding phases and blocks"""
+    for e in elements:
+        if isinstance(e, Segment) or isinstance(e, Instruction):
+            yield e
+        elif hasattr(e, "iter_expanded"):
+            for e2 in e.iter_expanded():
+                yield e2
+        elif hasattr(e, "segments"):
+            for e2 in e.segments:
+                yield e2
 
 
 def label_data(protocol, data, control_var):
@@ -181,28 +198,58 @@ class BinOp(Expression):
 
 
 class Parameter:
-    def __init__(self, name, unit, value=None):
+    def __init__(self, name, value: Union["Unit", "Q"]):
+        """Return Parameter object
+
+        May be called two ways:
+
+        `Parameter(name, unit)` returns a parameter with the given units but no
+        default value.
+
+        `Parameter(name, quantity)` returns a parameter with a default value and the
+        units of that value.
+
+        """
         self.name = name
-        self.unit = unit
-        self.value = value
-        if value is not None:
-            try:
-                value.to(unit)
-            except pint.errors.DimensionalityError:
-                raise ValueError(
-                    f"Value of parameter '{name}' has units of '{value.units}', but its definition requires units compatible with '{unit}'."
-                )
+        if isinstance(value, Unit):
+            self.units = value
+            self.value = None
+        elif isinstance(value, Q):
+            self.value = value
+            self.units = value.units
+        else:
+            raise ValueError(
+                f"Parameter must be initialized with either a Unit or a Quantity."
+            )
 
     def __str__(self):
-        return f"{self.name} [{self.unit}] = {self.value}"
+        return f"{self.name} [{self.units}] = {self.value}"
 
     def __repr__(self):
         return (
-            f"{self.__class__.__name__}({self.name!r}, {self.unit!r}, {self.value!r})"
+            f"{self.__class__.__name__}({self.name!r}, {self.units!r}, {self.value!r})"
         )
 
     def eval(self):
         return self.value
+
+
+class Variable:
+    def __init__(self, name, units: Union[str, ureg.Unit]):
+        self.name = name
+        if isinstance(units, str):
+            self.units = ureg.Unit(units)
+        else:
+            self.units = units
+
+    def __str__(self):
+        return f"{self.name} [{self.units}]"
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.name!r}, {self.units!r})"
+
+    def __hash__(self):
+        return hash(self.name)
 
 
 class ProtocolData:
@@ -250,6 +297,7 @@ class ProtocolData:
             self.segments[i].times = [t0, t1]
 
 
+# TODO: Delete?
 class InitialState:
     def __init__(self, reference_state):
         self._state = reference_state
@@ -265,7 +313,29 @@ class InitialState:
         return self._state[k]
 
 
-class Q(ureg.Quantity):
+class Instruction:
+    """Keyword instruction, mostly for variable defaults"""
+
+    def __init__(self, variable: Variable, action, value=None):
+        self.variable = variable
+        self.action = action
+        self.value = value
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}('{self.variable}', '{self.action}', '{self.value}')"
+
+    def apply_to_segment(self, segment: "Segment"):
+        # We could check if the variable was already controlled, but that's not
+        # really a concern for the Instruction itself.
+        if self.variable not in segment.controlled_variables:
+            if self.value == "hold":
+                t = Transition(self.variable, RelativeTarget(Q(0, self.variable.units)))
+                segment.add_transition(t)
+            if self.value == "free":
+                segment.add_free(self.variable)
+
+
+class Quantity(ureg.Quantity):
     """A literal value, with no parameters
 
     This class exists for two reasons:
@@ -282,11 +352,48 @@ class Q(ureg.Quantity):
         return self
 
 
+Unit = ureg.Unit
+Q = Quantity
+
+
+class State:
+    """A collection of variable values"""
+
+    def __init__(self, values: Dict[Variable, Quantity]):
+        self.by_name = {v.name: q for v, q in values.items()}
+        self.by_var = {v: q for v, q in values.items()}  # copy
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            return self.by_name[item]
+        else:
+            return self.by_var[item]
+
+    def __repr__(self):
+        nm = self.__class__.__name__
+        s = f"{nm}({{"
+        for i, (var, val) in enumerate(self.by_var.items()):
+            if i != 0:
+                s += f",\n  {' '*len(nm)}"
+            s += f"{var}, {val}"
+        s += "})"
+        return s
+
+    def __str__(self):
+        s = "State:"
+        for var, val in self.by_var.items():
+            s += f"\n  {var.name} [{var.units}] = {val}"
+        return s
+
+
 class SymbolicValue:
     """A symbolic value to be substituted with a literal value during evaluation"""
 
     def __init__(self, name):
         self.name = name
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.name})"
 
     def eval(self, parameters: dict):
         if parameters is None:
@@ -313,7 +420,7 @@ class RelativeTarget:
 class Transition:
     def __init__(
         self,
-        variable: str,
+        variable: Variable,
         target: Union[Q, Expression, RelativeTarget],
         path="linear",
     ):
@@ -322,70 +429,150 @@ class Transition:
         self.path = path
 
     def __repr__(self):
-        return f"{self.__class__}({self.variable}, {self.target}, {self.path})"
+        return f"{self.__class__.__name__}({self.variable}, {self.target}, {self.path})"
 
     def __str__(self):
         return f"{self.variable} → {self.target}"
 
 
 class Segment:
-    def __init__(self, transitions: List[Transition]):
+    def __init__(
+        self,
+        transitions: Iterable[Transition],
+        variables: Optional[Iterable[Variable]] = None,
+    ):
         """Return Segment object"""
-        self.transitions = {t.variable: t for t in transitions}
+        self._transitions: Dict[str, Transition] = {
+            t.variable.name: t for t in transitions
+        }
+        if variables is not None:
+            self._variables = {v.name: v for v in variables}
+            # Check for use of undeclared variables, since a list of declared
+            # variables was provided.
+            for t in self._transitions.values():
+                if t.variable.name not in self._variables:
+                    raise ValueError(
+                        f"Variable {t.variable.name} was referenced in a Segment, but was not present in the list of variables provided to the Segment."
+                    )
+        else:
+            # Build a list of used variables.
+            self._variables = {
+                t.variable.name: t.variable for t in self._transitions.values()
+            }
 
     def __repr__(self):
-        return f"{self.__class__}({self.transitions})"
+        controlled = set(t.variable for t in self._transitions.values())
+        free = set(self._variables.values()) - controlled
+        parts = [f"{self._transitions[v.name]}" for v in controlled] + [
+            f"{v!r} → free" for v in free
+        ]
+        prefix = f"{self.__class__.__name__}({{"
+        suffix = "})"
+        s = prefix + f",\n{' '*len(prefix)}".join(parts) + suffix
+        return s
 
     @property
-    def variables(self):
-        """Return list of this segment's controlled variables"""
-        return set(self.transitions.keys())
+    def controlled_variables(self):
+        return tuple(t.variable for t in self._transitions.values())
 
-    def eval_state(self, variable: str, value: Q, initial_state: dict, parameters=None):
+    @property
+    def free_variables(self):
+        return tuple(
+            v for nm, v in self._variables.items() if nm not in self._transitions
+        )
+
+    @property
+    def transitions(self):
+        return self._transitions
+
+    def add_free(self, variable):
+        """Add a free variable to the segment (idempotent, mutates)
+
+        This method is meant to facilitate applying control instructions during
+        initialization of a Protocol object.  Initializing a Segment all at once is
+        recommended.
+
+        """
+        if variable.name in self._transitions:
+            del self._transitions[variable.name]
+        else:
+            self._variables[variable.name] = variable
+
+    def add_transition(self, transition):
+        """Add a transition to the segment (idempotent, mutates)
+
+        `Segment.variables` must be updated when a transition is added.  This method
+        is meant to facilitate applying control instructions during initialization of
+        a Protocol object.  Initializing a Segment all at once is recommended.
+
+        """
+        self._transitions[transition.variable.name] = transition
+        self._variables[transition.variable.name] = transition.variable
+
+    def eval_state(
+        self,
+        variable: Union[str, Variable],
+        value: Q,
+        initial_state: State,
+        parameters=None,
+    ):
         """Return succession of states at an independent variable's values
 
         The independent variable must be strictly monotonically increasing.
         Typically the independent variable is time or pseudo-time.
 
         """
+        if isinstance(variable, str):
+            abscissa = self._variables[variable]
+        else:
+            abscissa = variable
+        state = {abscissa: value}
         if parameters is None:
             parameters = {}
-        # TODO: How do I want to handle relative vs. absolute target_state for eval?
-        # Initialize evaluated state
-        state = {var: None for var in self.transitions}
-        state[variable] = value
+        # Find where we're going to interpolate the transitions
         try:
-            trans = self.transitions[variable]
+            t = self._transitions[abscissa.name]
         except KeyError:
-            raise ValueError(f"Variable '{variable}' is not controlled in this segment")
+            raise ValueError(
+                f"Variable '{abscissa.name}' is not controlled in this segment"
+            )
+        # Interpolate the abscissa
         try:
-            v0 = initial_state[variable]
+            v0 = initial_state[abscissa]
         except KeyError:
-            raise ValueError(f"Variable '{variable}' not in provided initial state.")
+            raise ValueError(
+                f"Variable '{abscissa.name}' not in provided initial state."
+            )
         # TODO: refactor this to not have to switch call signatures
-        if isinstance(trans.target, RelativeTarget):
-            v1 = trans.target.eval(v0, parameters)
+        if isinstance(t.target, RelativeTarget):
+            v1 = t.target.eval(v0, parameters)
         else:
-            v1 = trans.target.eval(parameters)
-        if trans.path == "linear":
+            v1 = t.target.eval(parameters)
+        if t.path == "linear":
             # Define pseudo-time s; 0 ≤ s ≤ 1, where s = 0 is the start of the segment
             # and s = 1 is the end.
             s_crit = ((value - v0) / (v1 - v0)).m
         else:
             raise NotImplementedError
-        for var, trans in self.transitions.items():
-            if var == variable:
-                # Already handled the abscissa
+        # Interpolate the variables
+        for nm, var in self._variables.items():
+            if var == abscissa:
+                # We already did the abscissa variable
                 continue
-            v0 = initial_state[var]
-            # TODO: refactor this to not have to switch call signatures
-            if isinstance(trans.target, RelativeTarget):
-                Δ = trans.target.value.eval(parameters)
+            if nm in self.transitions:
+                t = self.transitions[nm]
+                v0 = initial_state[t.variable]
+                # TODO: refactor this to not have to switch call signatures
+                if isinstance(t.target, RelativeTarget):
+                    Δ = t.target.value.eval(parameters)
+                else:
+                    v1 = t.target.eval(parameters)
+                    Δ = v1 - v0
+                state[t.variable] = v0 + s_crit * Δ
             else:
-                v1 = trans.target.eval(parameters)
-                Δ = v1 - v0
-            state[var] = v0 + s_crit * Δ
-        return state
+                # Variable is free
+                state[var] = None
+        return State(state)
 
     def target_state(self, initial_state, parameters=None):
         """Return target state for all variables
@@ -397,14 +584,16 @@ class Segment:
         of initial state) an empty dict may be provided for the initial state.
 
         """
+        if parameters is None:
+            parameters = {}
         state = {}
-        for t in self.transitions.values():
+        for t in self._transitions.values():
             if isinstance(t.target, RelativeTarget):
                 state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
             else:
                 # Absolute target
                 state[t.variable] = t.target.eval(parameters)
-        return state
+        return State(state)
 
 
 class Block:
@@ -439,6 +628,11 @@ class Phase:
     def __repr__(self):
         return f"{self.__class__}({self.name}, {self.elements})"
 
+    def iter_expanded(self):
+        """Return iterator over instructions and segments, expanding phases and blocks"""
+        for e in iter_expanded(self.elements):
+            yield e
+
     @property
     def segments(self):
         segments = []
@@ -447,11 +641,7 @@ class Phase:
                 segments.append(e)
             elif isinstance(e, Block):
                 segments.append(seg for seg in e)
-            elif isinstance(e, tuple) and e[0] in (
-                "set-default",
-                "control",
-                "uncontrol",
-            ):
+            elif isinstance(e, Instruction):
                 # Keyword command, not really supported yet
                 continue
             else:
@@ -462,19 +652,78 @@ class Phase:
 
 
 class Protocol:
-    def __init__(self, initial_state, elements, parameters: Optional[dict] = None):
-        if parameters is None:
-            parameters = {}
-        self.parameters = parameters
+    def __init__(
+        self,
+        initial_state: State,
+        elements,
+        variables: Optional[Iterable[Variable]] = None,
+        parameters: Optional[Iterable[Parameter]] = None,
+    ):
         # Make the protocol data immutable-ish
         self.initial_state = initial_state
         self.elements = tuple(elements)
-
+        # Collect parameters
+        if parameters is None:
+            self.parameters = {}
+        else:
+            self.parameters = {p.name: p for p in parameters}
+        # Collect variables
+        if variables is None:
+            # A list of variables was not provided.  Build a list of variables that
+            # are referenced in the protocol (this is for user convenience).
+            self.variables = {}
+            for seg in self.segments:
+                for nm, var in seg._variables.items():
+                    self.variables[nm] = var
+        else:
+            # A list of variables was provided.  Ensure no undefined variables are used.
+            self.variables = {var.name: var for var in variables}
+            for seg in self.segments:
+                for nm, var in seg._variables.items():
+                    if nm not in self.variables:
+                        raise ValueError(
+                            f"Variable {nm} was referenced in a Segment, but was not present in the list of variables provided to the Protocol."
+                        )
+        # Expand defaults and check/populate variables list
+        active = {}  # active defaults
+        for e in self.iter_expanded():
+            if isinstance(e, Instruction):
+                # Keep track of active instructions
+                new = e
+                old = active.get(new.variable, None)
+                if new.action == "fix" or new.action == "set-default":
+                    if old is not None and old.action == "fix":
+                        # You can't adjust a fixed variable except to unfix it.
+                        raise ControlConflictError(
+                            new.variable,
+                            f"{new} was given while a 'fix' instruction was active.  Use 'unfix' to remove this restriction.",
+                        )
+                    active[new.variable] = new
+                    continue
+                if new.action == "unfix":
+                    if old is None or old.action != "fix":
+                        raise ControlConflictError(
+                            new.variable,
+                            f"Can't 'unfix' without an active 'fix' instruction.",
+                        )
+                    del active[new.variable]
+                    continue
+                if new.action == "unset-default":
+                    if old is None or old.action != "set-default":
+                        raise ControlConflictError(
+                            new.variable,
+                            f"Can't 'unset-default' without an active 'set-default' instruction.",
+                        )
+                    del active[new.variable]
+                    continue
+                active[new.variable] = new
+                continue
+            if isinstance(e, Segment):
+                for var, instr in active.items():
+                    instr.apply_to_segment(e)
         # Dictionaries to access phases by name.  Add dicts for segments and blocks
         # if they get names later.
         self.phase_dict = OrderedDict()
-
-        # Create membership maps
         self.phase_of_segment: Dict[Segment, Optional[Phase]] = {}
         self.phase_of_block: Dict[Segment, Optional[Block]] = {}
         for element in self.elements:
@@ -503,6 +752,11 @@ class Protocol:
             s += f"  {e}\n"
         return s
 
+    def iter_expanded(self):
+        """Return iterator over instructions and segments, expanding phases and blocks"""
+        for e in iter_expanded(self.elements):
+            yield e
+
     # Perhaps this should be cached for performance?  It would help if the protocol were
     # genuinely immutable.
     @property
@@ -510,7 +764,7 @@ class Protocol:
         """Return sequence of Segments
 
         Only segments are included in the return value.  Instructions (e.g.,
-        set-default, control, and uncontrol) are not included.
+        set-default, fix, and unfix) are not included.
 
         """
         segments = tuple()
@@ -521,10 +775,13 @@ class Protocol:
                 segments += part.segments
         return segments
 
-    def eval_state(self, variable: str, value: Q):
+    def eval_state(self, variable: Union[str, Variable], value: Q):
+        # Resolve names
+        if isinstance(variable, str):
+            variable = self.variables[variable]
         return self.eval_states(variable, [value])[0]
 
-    def eval_states(self, variable: str, values: Iterable[Q]):
+    def eval_states(self, variable: Union[str, Variable], values: Iterable[Q]):
         """Return succession of states at an independent variable's values
 
         :param variable: The independent variable which has values at which the
@@ -538,7 +795,11 @@ class Protocol:
         :returns: Sequence of states.  Each state is a map: variable name → value.
 
         """
-        states = []
+        # Resolve names
+        if isinstance(variable, str):
+            variable = self.variables[variable]
+        # Evaluate states
+        states: Iterable[State] = []
         i = 0  # index into `values`
         segments = self.segments
         j = 0  # index into segments

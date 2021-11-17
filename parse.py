@@ -4,7 +4,7 @@ import re
 
 # Local packages
 from warnings import warn
-from typing import Dict, Optional
+from typing import Iterable, Optional
 
 from . import protocol, ureg
 
@@ -18,7 +18,7 @@ re_ws = re.compile(r"^\s+")
 
 re_num = re.compile(r"-?(\d*\.)?\d+")
 
-keywords = ("set-default", "control", "uncontrol")
+keywords = ("set-default", "unset-default", "fix", "unfix")
 
 
 def to_number(s):
@@ -54,7 +54,7 @@ class Comment(Token):
     regex = re.compile("^#")
 
     @classmethod
-    def match(self, s: str) -> Optional[str]:
+    def match(cls, s: str) -> Optional[str]:
         if s.startswith("#"):
             return s[1:].lstrip()
         return None
@@ -63,13 +63,13 @@ class Comment(Token):
 class Segment:
     """Parse data for a Segment"""
 
-    def __init__(self, transitions):
+    def __init__(self, transitions: Iterable["Transition"]):
         self.transitions = transitions
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.transitions!r})"
 
-    def read(self):
+    def read(self, variables, parameters=None):
         """Return protocol.Segment object from parse data"""
         transitions = []
         for t in self.transitions:
@@ -79,20 +79,26 @@ class Segment:
                     "provided.  Non-default paths are not yet supported. "
                     "The default is a linear transition."
                 )
-            transitions.append(t.read())
+            transitions.append(t.read(variables, parameters))
         return protocol.Segment(transitions)
 
 
 class Instruction:
     """Parse data for a keyword instruction"""
 
-    def __init__(self, keyword, variable, setting):
-        self.keyword = keyword
+    def __init__(self, keyword: str, variable: str, value: str):
+        self.action = keyword
         self.variable = variable
-        self.setting = setting
+        self.value = value
 
-    def read(self):
-        return self.keyword, self.variable, self.setting
+    def __str__(self):
+        return f"'{self.action} {self.variable} {self.value}'"
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}('{self.action}', '{self.variable}', '{self.value}')"
+
+    def read(self, variables, parameters=None):
+        return protocol.Instruction(variables[self.variable], self.action, self.value)
 
 
 class Phase:
@@ -105,11 +111,22 @@ class Phase:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.name!r}, {self.elements!r})"
 
-    def read(self):
+    def iter_expand(self):
+        for e in self.elements:
+            if isinstance(e, Segment) or isinstance(e, Instruction):
+                yield e
+            elif hasattr(e, "iter_expand"):
+                for e2 in e.iter_expand():
+                    yield e2
+            elif hasattr(e, "segments"):
+                for e2 in e.segments:
+                    yield e2
+
+    def read(self, variables, parameters=None):
         """Return protocol.Phase instance from parse data"""
         elements = []
         for e in self.elements:
-            elements.append(e.read())
+            elements.append(e.read(variables, parameters))
         return protocol.Phase(self.name, elements)
 
 
@@ -148,18 +165,18 @@ class Name(Token):
 
 
 class NumericValue:
-    def __init__(self, num, unit=Unit("1")):
+    def __init__(self, num, units=Unit("1")):
         self.num = num
-        self.unit = unit
+        self.units = units
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.num}, {self.unit!r})"
+        return f"{self.__class__.__name__}({self.num}, {self.units!r})"
 
     def __str__(self):
-        return f"{self.num} {self.unit}"
+        return f"{self.num} {self.units}"
 
     def read(self):
-        return protocol.Q(self.num.read(), self.unit.read())
+        return protocol.Q(self.num.read(), self.units.read())
 
 
 class SymbolicValue:
@@ -240,7 +257,7 @@ class Expression:
         return stack[0]
 
 
-# Classes for parsing parameter definitions and assignments
+# Classes for parsing definitions and assignments for parameters and variables
 
 
 class ParametersSection:
@@ -281,9 +298,42 @@ class ParametersSection:
                 value = self.values[p].read()
             else:
                 value = None
-            unit = d.unit.read()
-            parameters[p] = protocol.Parameter(p, unit, value)
+            units = d.units.read()
+            if not value.is_compatible_with(units):
+                raise ValueError(
+                    f"Value of parameter '{p}' has units of '{value.units}', but its definition requires units compatible with '{units}'."
+                )
+            parameters[p] = protocol.Parameter(p, value)
         return parameters
+
+
+class VariablesSection:
+    """Representation of Variables section"""
+
+    def __init__(self, definitions):
+        self.definitions = definitions
+
+    @classmethod
+    def match(cls, lines):
+        definitions = {}
+        for ln in lines:
+            ln = ln.strip()
+            if ln == "":
+                continue
+            if m := Definition.match(ln):
+                definitions[m.parameter] = m
+                continue
+            raise ParseError(
+                f"Could not parse the following line as part of the 'Variables' section:\n{ln}"
+            )
+        return cls(definitions)
+
+    def read(self):
+        variables = {}
+        for nm, d in self.definitions.items():
+            unit = d.units.read()
+            variables[nm] = protocol.Variable(nm, unit)
+        return variables
 
 
 class Assignment:
@@ -327,9 +377,9 @@ class Assignment:
 class Definition:
     """Definition; e.g., h [mm] := specimen height"""
 
-    def __init__(self, parameter, unit, description):
+    def __init__(self, parameter, units, description):
         self.parameter = parameter
-        self.unit = unit
+        self.units = units
         self.description = description
 
     @classmethod
@@ -385,9 +435,9 @@ class Transition:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.variable}, {self.target}, {self.path})"
 
-    def read(self):
+    def read(self, variables, parameters=None):
         path = self.path if self.path is not None else "linear"
-        return protocol.Transition(self.variable, self.target.read(), path)
+        return protocol.Transition(variables[self.variable], self.target.read(), path)
 
 
 class Target:
@@ -396,6 +446,14 @@ class Target:
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.value})"
+
+    def read(self):
+        """Read target value
+
+        Override in derived classes
+
+        """
+        raise NotImplementedError
 
 
 class AbsoluteTarget(Target):
@@ -628,7 +686,7 @@ def parse_protocol_section(lines):
         else:
             return None
 
-    def match_transition(s: str) -> Optional[str]:
+    def match_transition(s: str) -> Optional[Transition]:
         """Match transition statement & advance line number
 
         Matches optional trailing comment, but expects the leading "|" for the first
@@ -790,14 +848,18 @@ def read_default_rates(lines):
     return rates
 
 
-def read_reference_state(lines):
+def read_reference_state(lines, variables, parameters):
     reference_values = {}
     for ln in lines:
         if not is_ws(ln):
             m = re.match(r"(?P<var>\w+)" r"\s*=\s*" r"(?P<expr>[\s\S]+)", ln)
+            # TODO: A read call probably shouldn't trigger parsing, because that
+            #  might force us to pass variable lists, parameter lists, and other
+            #  context to the parser.
             expr = parse_expression(m.group("expr"))
-            reference_values[m.group("var")] = expr.read()
-    return reference_values
+            varname = m.group("var")
+            reference_values[variables[varname]] = expr.read()
+    return protocol.State(reference_values)
 
 
 def _nested_set(dic, path, value):
@@ -823,6 +885,7 @@ def read_prune(p):
     # Read metadata
     metadata = {}
     in_metadata = True
+    i = 0
     for i, ln in enumerate(lines):
         if ln.isspace():
             # Empty line
@@ -838,14 +901,22 @@ def read_prune(p):
     sections = parse_sections(lines[i:], offset=i)
     # Read parameters (and their default values)
     parameters = ParametersSection.match(sections["definitions"]["parameters"]).read()
+    # Read variables
+    variables = VariablesSection.match(sections["definitions"]["variables"]).read()
     # Parse protocol
     p_protocol = parse_protocol_section(sections["protocol"])
     # Read protocol
-    defaults = {}
-    defaults["rates"] = read_default_rates(
-        sections["definitions"].get("default interpolation", [])
+    defaults = {
+        "rates": read_default_rates(
+            sections["definitions"].get("default interpolation", [])
+        )
+    }
+    reference_state = read_reference_state(
+        sections["definitions"]["initialization"], variables, parameters
     )
-    reference_state = read_reference_state(sections["definitions"]["initialization"])
     return protocol.Protocol(
-        reference_state, [e.read() for e in p_protocol], parameters
+        reference_state,
+        [e.read(variables, parameters) for e in p_protocol],
+        variables.values(),
+        parameters.values(),
     )

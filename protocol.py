@@ -779,6 +779,10 @@ class Protocol:
         # Resolve names
         if isinstance(variable, str):
             variable = self.variables[variable]
+        if not isinstance(value, Q):
+            raise ValueError(
+                "Must provide a single Quantity to `eval_state`.  To evaluate multiple states, use `eval_states`."
+            )
         return self.eval_states(variable, [value])[0]
 
     def eval_states(self, variable: Union[str, Variable], values: Iterable[Q]):
@@ -839,4 +843,6 @@ class Protocol:
                 # TODO: Found state; ensure all variables are present
                 states.append(state)
                 break
+        # TODO: Check for out-of-bounds error.  Maybe add a special terminating segment
+        # with infinite duration?
         return tuple(states)

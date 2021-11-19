@@ -1,4 +1,5 @@
 from prunetest import parse
+from prunetest.parse import BinOp, Expression, Number, NumericValue, Symbol, UnOp
 
 
 def test_is_blank_line():
@@ -122,7 +123,59 @@ def test_match_unit_permeability():
 
 # TODO: Test parsing of expressions
 
-# 1 + (a + b)
-# (a + b) - 1
-# (1 + 1)
-# 1 + (a + (1 - b))
+
+def test_match_neg_exp():
+    match = parse.parse_expression("-λ_freeswell^2")
+    expected = Expression(
+        [UnOp("-"), Symbol("λ_freeswell"), BinOp("^"), NumericValue("2", Number(2))]
+    )
+    assert match == expected
+
+
+def test_match_nested_groups():
+    # 1 + (a + b)
+    match = parse.parse_expression("1 + (a + b)")
+    expected = Expression(
+        [
+            NumericValue("1", Number(1)),
+            BinOp("+"),
+            Expression([Symbol("a"), BinOp("+"), Symbol("b")]),
+        ]
+    )
+    assert match == expected
+    # (a + b) - 1
+    match = parse.parse_expression("(a + b) + 1")
+    expected = Expression(
+        [
+            Expression([Symbol("a"), BinOp("+"), Symbol("b")]),
+            BinOp("+"),
+            NumericValue("1", Number(1)),
+        ]
+    )
+    assert match == expected
+    # (1 + 1)
+    match = parse.parse_expression("(1 + 1)")
+    expected = Expression(
+        [
+            Expression(
+                [NumericValue("1", Number(1)), BinOp("+"), NumericValue("1", Number(1))]
+            )
+        ]
+    )
+    assert match == expected
+    # 1 + (a + (1 - b))
+    match = parse.parse_expression("1 + (a + (1 - b))")
+    expected = Expression(
+        [
+            NumericValue("1", Number(1)),
+            BinOp("+"),
+            Expression(
+                [
+                    Symbol("a"),
+                    BinOp("+"),
+                    Expression([NumericValue("1", Number(1)), BinOp("-"), Symbol("b")]),
+                ]
+            ),
+        ]
+    )
+    assert match == expected

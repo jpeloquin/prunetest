@@ -16,8 +16,6 @@ re_trans = re.compile(r"^→|->")
 
 re_ws = re.compile(r"^\s+")
 
-re_num = re.compile(r"-?(\d*\.)?\d+")
-
 keywords = ("set-default", "unset-default", "fix", "unfix")
 
 
@@ -30,8 +28,8 @@ def to_number(s):
 
 
 class Token:
-    def __init__(self, text):
-        self.text = text
+    def __init__(self, text: str):
+        self.text: str = text
 
     def __eq__(self, s):
         return str(self) == s
@@ -40,7 +38,7 @@ class Token:
         return len(self.text)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.text!r})"
+        return f"{self.__class__.__name__}({self.text})"
 
     def __str__(self):
         return str(self.text)
@@ -134,6 +132,13 @@ class Phase:
 
 
 class Number(Token):
+    re = re.compile(r"-?(\d*\.)?\d+")
+
+    @classmethod
+    def match(cls, s: str) -> Optional["Number"]:
+        if m := cls.re.match(s):
+            return cls(m.group())
+
     def read(self):
         return to_number(self.text)
 
@@ -154,45 +159,55 @@ class Unit(Token):
         return ureg.Quantity(self.text).units
 
 
-class Name(Token):
-    regex = re.compile(r"^\w+")
-
-    @classmethod
-    def match(self, s: str) -> Optional[str]:
-        """Return matching start of string or None"""
-        if m := self.regex.match(s):
-            return m.group()
-
-
 class NumericValue:
-    def __init__(self, num, units=Unit("1")):
+    # TODO: This class doesn't follow the pattern I've established with other classes
+    #  of separating string matching and data structures.
+    def __init__(self, text, num, units=Unit("1")):
+        self._match = text
         self.num = num
         self.units = units
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.num}, {self.units!r})"
+        return f"{self.__class__.__name__}({self._match})"
 
     def __str__(self):
-        return f"{self.num} {self.units}"
+        return self._match
+
+    def __eq__(self, other):
+        return self.num == other.num and self.units == other.units
+
+    def __len__(self):
+        return len(self._match)
+
+    @classmethod
+    def match(cls, s: str) -> Optional["NumericValue"]:
+        i = 0
+        if num := Number.match(s[i:]):
+            i += len(num)
+            i += match_ws(s[i:])
+            if unit := Unit.match(s[i:]):
+                i += len(unit)
+                return cls(s[:i], num, unit)
+            else:
+                return cls(s[:i], num)
 
     def read(self):
         return protocol.Q(self.num.read(), self.units.read())
 
 
-class SymbolicValue:
-    def __init__(self, name):
-        self.name = name
+class Symbol(Token):
+    regex = re.compile(r"^\w+")
 
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.name})"
-
-    def __str__(self):
-        return str(self.name)
+    @classmethod
+    def match(cls, s: str) -> Optional["Symbol"]:
+        """Return matching start of string or None"""
+        if m := cls.regex.match(s):
+            return cls(m.group())
 
     def read(self):
         # Note: SymbolicValue assumes that the name refers to a parameter; at least,
         # it did when this comment was written.
-        return protocol.SymbolicValue(self.name)
+        return protocol.SymbolicValue(self.text)
 
 
 class UnOp(Token):
@@ -222,6 +237,9 @@ class Expression:
 
     def __str__(self):
         return " ".join(str(v) for v in self.tokens)
+
+    def __eq__(self, other):
+        return self.tokens == other.tokens
 
     def read(self):
         """Evaluate expression, substituting parameters"""
@@ -281,10 +299,10 @@ class ParametersSection:
             if ln == "":
                 continue
             if m := Definition.match(ln):
-                definitions[m.parameter] = m
+                definitions[m.parameter.text] = m
                 continue
             if m := Assignment.match(ln):
-                values[m.parameter] = m.expression
+                values[m.parameter.text] = m.expression
                 continue
             raise ParseError(
                 f"Could not parse the following line as part of the 'Parameters' section:\n{ln}"
@@ -295,7 +313,7 @@ class ParametersSection:
         parameters = {}
         for p, d in self.definitions.items():
             if p in self.values:
-                value = self.values[p].read()
+                value = self.values[p].read().eval(parameters)
             else:
                 value = None
             units = d.units.read()
@@ -321,7 +339,7 @@ class VariablesSection:
             if ln == "":
                 continue
             if m := Definition.match(ln):
-                definitions[m.parameter] = m
+                definitions[m.parameter.text] = m
                 continue
             raise ParseError(
                 f"Could not parse the following line as part of the 'Variables' section:\n{ln}"
@@ -360,7 +378,7 @@ class Assignment:
         name = None
         expr = None
         i = 0
-        if m := Name.match(s[i:]):
+        if m := Symbol.match(s[i:]):
             i += len(m)
             name = m
         else:
@@ -386,7 +404,7 @@ class Definition:
     def match(cls, s: str) -> Optional["Definition"]:
         """Match definition statement at start of string up to newline"""
         i = 0
-        if m := Name.match(s[i:]):
+        if m := Symbol.match(s[i:]):
             name = m
             i += len(m)
         else:
@@ -510,7 +528,6 @@ def expand_block(elements):
 
 def parse_expression(s):
     """Return syntax tree for expression"""
-    i = 0  # character index; if ≥ len(s), must return immediately
 
     def match_binary_op():
         nonlocal i
@@ -518,99 +535,75 @@ def parse_expression(s):
             i += len(m)
             return m
 
-    def match_group():
-        nonlocal i
-        if s[i] == "(":
-            # Open group
-            i += 1
-            open_paren = i
-            open = 1
-            while i < len(s):
-                if s[i] == "(":
-                    open += 1
-                elif s[i] == ")":
-                    open -= 1
-                if open == 0:
-                    close_paren = i
-                    i += 1
-                    break
-                else:
-                    i += 1
+    def match_group(s):
+        if s[0] != "(":
+            return None
+        i = 0
+        n_open = 0
+        while i < len(s):
+            if s[i] == "(":
+                n_open += 1
+            elif s[i] == ")":
+                n_open -= 1
+            if n_open == 0:
+                close_paren = i
+                i += 1
+                break
             else:
-                raise ParseError(
-                    f"Unmatched open parenthesis.  Next 20 characters after unmatched parenthesis were: {s[i:i+20]}"
-                )
-            group = parse_expression(s[open_paren:close_paren])
-            return group
+                i += 1
+        if n_open != 0:
+            raise ParseError(
+                f"Unmatched open parenthesis.  Next 20 characters after unmatched parenthesis were: {s[i:i+20]}"
+            )
+        return s[:close_paren + 1]
 
-    def match_number():
-        nonlocal i
-        if m := re_num.match(s[i:]):
-            i += m.end()
-            return Number(m.group())
-
-    def match_unary_op():
-        nonlocal i
-        if m := UnOp.match(s[i:]):
-            i += len(m)
+    def match_value(s):
+        if m := NumericValue.match(s):
+            return m
+        if m := Symbol.match(s):
             return m
 
-    def match_unit():
-        nonlocal i
-        if m := Unit.match(s[i:]):
-            i += len(m)
-            return m
-
-    def match_name():
-        nonlocal i
-        if m := Name.match(s[i:]):
-            i += len(m)
-            return Name(m)
-
-    def match_ws():
+    def skip_ws():
         nonlocal i
         if m := re_ws.match(s[i:]):
             i += m.end()
             return m.group()
 
-    def match_value():
-        nonlocal i
-        if num := match_number():
-            match_ws()
-            if unit := match_unit():
-                return NumericValue(num, unit)
-            else:
-                return NumericValue(num)
-        if name := match_name():
-            return SymbolicValue(name.text)
-
+    i = 0  # character index; if ≥ len(s), must return immediately
     stream = []
     while i < len(s):
-        match_ws()
+        skip_ws()
         if i == len(s):
             # Have to break manually if everything left was whitespace.
             break
-        if un := match_unary_op():
-            stream.append(un)
+        if m := UnOp.match(s[i:]):
+            i += len(m)
+            stream.append(m)
             # Unary operator must be adjacent to operand
-            if group := match_group():
-                stream.append(group)
-                continue
-            if value := match_value():
-                stream.append(value)
-                continue
-        if m := match_group():
-            stream.append(m)
-            match_ws()
-            if m := match_binary_op():
+            if m := match_group(s[i:]):
+                i += len(m)
+                expr = parse_expression(m[1:-1])  # remove parens
+                stream.append(expr)
+            elif m := match_value(s[i:]):
+                i += len(m)
                 stream.append(m)
-            continue
-        if m := match_value():
+            else:
+                raise ParseError(
+                    f"Unary operator was not followed by an operand.  Failed to parse the following text as an expression: {s}"
+                )
+        elif m := match_group(s[i:]):
+            i += len(m)
+            expr = parse_expression(m[1:-1])
+            stream.append(expr)
+            skip_ws()
+        elif m := match_value(s[i:]):
+            i += len(m)
             stream.append(m)
-            match_ws()
-            if m := match_binary_op():
-                stream.append(m)
-            continue
+            skip_ws()
+        if m := match_binary_op():
+            stream.append(m)
+            skip_ws()
+        continue
         raise ParseError(f"Failed to parse the following text as an expression: {s}")
     return Expression(stream)
 
@@ -709,8 +702,8 @@ def parse_protocol_section(lines):
 
         # Symbol
         skip_ws(s[i:])
-        if m := Name.match(s[i:]):
-            var = m
+        if m := Symbol.match(s[i:]):
+            varname = m.text
             i += len(m)
         else:
             return None
@@ -738,7 +731,7 @@ def parse_protocol_section(lines):
             target = RelativeTarget(expr)
         else:
             target = AbsoluteTarget(expr)
-        return Transition(var, target)
+        return Transition(varname, target)
 
     protocol = []  # list of ([children], kind, {param: value}) tuples.
     while i < len(lines):

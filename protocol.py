@@ -3,7 +3,7 @@ import operator
 from collections import OrderedDict, abc
 
 # Third-party packages
-from typing import Dict, Iterable, List, NewType, Optional, Union
+from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
 import pint
@@ -148,6 +148,7 @@ class Expression:
     """A mathematical expression which may contain symbolic values"""
 
     def eval(self, parameters=None):
+        """Evaluate expression (to be implemented by subclass)"""
         raise NotImplementedError
 
 
@@ -166,6 +167,9 @@ class UnOp(Expression):
     def __str__(self):
         return f"{self.op}{self.rval}"
 
+    def __eq__(self, other):
+        return all((self.op == other.op, self.rval == other.rval))
+
     def eval(self, parameters=None):
         return self.fn[self.op](self.rval.eval(parameters))
 
@@ -182,7 +186,7 @@ class BinOp(Expression):
         "^": operator.pow,
     }
 
-    def __init__(self, op, lval, rval):
+    def __init__(self, op: str, lval, rval):
         self.op = op
         self.lval = lval
         self.rval = rval
@@ -192,6 +196,11 @@ class BinOp(Expression):
 
     def __str__(self):
         return f"{self.lval} {self.op} {self.rval}"
+
+    def __eq__(self, other):
+        return all(
+            (self.op == other.op, self.lval == other.lval, self.rval == other.rval)
+        )
 
     def eval(self, parameters=None):
         return self.fn[self.op](self.lval.eval(parameters), self.rval.eval(parameters))
@@ -394,6 +403,9 @@ class SymbolicValue:
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.name})"
+
+    def __eq__(self, other):
+        return self.name == other.name
 
     def eval(self, parameters: dict):
         if parameters is None:

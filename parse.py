@@ -9,7 +9,8 @@ from typing import Iterable, Optional
 from . import protocol, ureg
 
 
-operators = ("+", "-", "−", "/", "*", "×", "^", "·")
+precedence = {"^": 2, "/": 1, "*": 1, "×": 1, "·": 1, "+": 0, "-": 0, "−": 0}
+operators = set(op for g in precedence for op in g)
 
 trans_op = ("→", "->")
 re_trans = re.compile(r"^→|->")
@@ -145,7 +146,10 @@ class Number(Token):
 
 class Unit(Token):
     re_unit = re.compile(
-        r"(\w|°)+(\s*" f"[{'|'.join(op for op in operators)}]" "{1}" r"\s*(\w|°)+)*"
+        r"(\w|°)+(\s*"
+        f"[{'|'.join(re.escape(op) for op in operators)}]"
+        "{1}"
+        r"\s*(\w|°)+)*"
     )
 
     @classmethod
@@ -230,6 +234,8 @@ class BinOp(Token):
 
 class Expression:
     def __init__(self, tokens):
+        if len(tokens) == 0:
+            raise ValueError("An expression must comprise at least one token.")
         self.tokens = tokens
 
     def __repr__(self):
@@ -243,36 +249,54 @@ class Expression:
 
     def read(self):
         """Evaluate expression, substituting parameters"""
+
+        def reduce_stack(stack: list):
+            rval = stack.pop()
+            while stack:
+                op = stack.pop()
+                if isinstance(op, UnOp):
+                    rval = protocol.UnOp(op.text, rval)
+                elif isinstance(op, BinOp):
+                    lval = stack.pop()
+                    rval = protocol.BinOp(op.text, lval, rval)
+            return rval
+
         stack = []
+        precedence_level = 0
         i = 0
         while i < len(self.tokens):
-            token = self.tokens[i]
-            if hasattr(token, "read"):
-                if i > 0 and hasattr(self.tokens[i - 1], "read"):
-                    raise ValueError(
-                        f"Two values, '{self.tokens[i-1]}' and '{token}', were encountered consecutively with no operator between them."
-                    )
-                stack.append(token.read())
+            # Convert any value token to evaluable objects
+            if hasattr(self.tokens[i], "read"):
+                stack.append(self.tokens[i].read())
                 i += 1
-            if isinstance(token, UnOp) or isinstance(token, BinOp):
-                if len(self.tokens) <= i + 1:
-                    raise ValueError(f"Found operator {token} with no following value.")
-                rtoken = self.tokens[i + 1]
-                rval = rtoken.read()
-                if isinstance(token, UnOp):
-                    # If the operand is numeric, apply the operator now
-                    un = protocol.UnOp(str(token), rval)
-                    if isinstance(rtoken, NumericValue):
-                        stack.append(un.eval())
-                    else:
-                        stack.append(un)
-                else:
-                    lval = stack.pop()
-                    stack.append(protocol.BinOp(str(token), lval, rval))
+                continue
+            # If the operand is numeric, apply any unary operator now.  This is the
+            # highest-precedence rule because the minus sign is considered part of
+            # the number.  Probably it should be parsed as part of the number during
+            # matching, instead of waiting for reading.
+            if isinstance(self.tokens[i], UnOp) and isinstance(
+                self.tokens[i + 1], NumericValue
+            ):
+                stack.append(
+                    protocol.UnOp(self.tokens[i].text, self.tokens[i + 1].read())
+                )
                 i += 2
-        if len(stack) > 1:
-            raise Exception
-        return stack[0]
+                continue
+            # Apply other operators in order of precedence.
+            if isinstance(self.tokens[i], UnOp) or isinstance(self.tokens[i], BinOp):
+                if stack and precedence[self.tokens[i].text] <= precedence_level:
+                    # Consume the entire stack
+                    rval = reduce_stack(stack)
+                    stack.append(rval)
+                    stack.append(self.tokens[i])
+                    precedence_level = precedence[self.tokens[i].text]
+                    i += 1
+                else:
+                    stack.append(self.tokens[i])
+                    i += 1
+        # Consume the entire stack
+        rval = reduce_stack(stack)
+        return rval
 
 
 # Classes for parsing definitions and assignments for parameters and variables
@@ -538,8 +562,9 @@ def parse_expression(s):
     def match_group(s):
         if s[0] != "(":
             return None
-        i = 0
         n_open = 0
+        close_paren = None
+        i = 0
         while i < len(s):
             if s[i] == "(":
                 n_open += 1
@@ -551,11 +576,11 @@ def parse_expression(s):
                 break
             else:
                 i += 1
-        if n_open != 0:
+        if close_paren is None:
             raise ParseError(
                 f"Unmatched open parenthesis.  Next 20 characters after unmatched parenthesis were: {s[i:i+20]}"
             )
-        return s[:close_paren + 1]
+        return s[: close_paren + 1]
 
     def match_value(s):
         if m := NumericValue.match(s):
@@ -576,6 +601,7 @@ def parse_expression(s):
         if i == len(s):
             # Have to break manually if everything left was whitespace.
             break
+        # Look for a value-like token
         if m := UnOp.match(s[i:]):
             i += len(m)
             stream.append(m)
@@ -600,11 +626,13 @@ def parse_expression(s):
             i += len(m)
             stream.append(m)
             skip_ws()
+        else:
+            raise ParseError(
+                f"Failed to parse the following text as an expression: {s}"
+            )
+        # Look for optional following binary operator
         if m := match_binary_op():
             stream.append(m)
-            skip_ws()
-        continue
-        raise ParseError(f"Failed to parse the following text as an expression: {s}")
     return Expression(stream)
 
 

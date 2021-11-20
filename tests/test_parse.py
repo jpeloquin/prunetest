@@ -125,11 +125,24 @@ def test_match_unit_permeability():
 
 
 def test_match_neg_exp():
+    # Without parens
     match = parse.parse_expression("-λ_freeswell^2")
-    expected = Expression(
+    noparens = Expression(
         [UnOp("-"), Symbol("λ_freeswell"), BinOp("^"), NumericValue("2", Number(2))]
     )
-    assert match == expected
+    assert match == noparens
+    # With parens
+    match = parse.parse_expression("-(λ_freeswell^2)")
+    withparens = Expression(
+        [
+            UnOp("-"),
+            Expression(
+                [Symbol("λ_freeswell"), BinOp("^"), NumericValue("2", Number(2))]
+            ),
+        ]
+    )
+    assert match == withparens
+    assert noparens.read() == withparens.read()
 
 
 def test_match_nested_groups():

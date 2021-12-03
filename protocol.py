@@ -10,7 +10,7 @@ import pint
 from scipy.optimize import minimize
 
 
-ureg = pint.UnitRegistry()
+ureg = pint.get_application_registry()
 
 
 class ControlConflictError(ValueError):

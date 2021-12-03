@@ -215,7 +215,7 @@ class Symbol(Token):
 
 
 class UnOp(Token):
-    re_un_op = re.compile(r"^-")
+    re_un_op = re.compile(r"^[-−]")
 
     @classmethod
     def match(cls, s):

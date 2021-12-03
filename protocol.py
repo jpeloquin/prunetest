@@ -19,6 +19,20 @@ class ControlConflictError(ValueError):
         super().__init__(msg)
 
 
+def evaluate(obj, parameters=None):
+    """Return literal value from expression or value-like object"""
+    if hasattr(obj, "eval"):
+        return obj.eval(parameters=parameters)
+    elif not isinstance(obj, Quantity):
+        # This check could be deleted.  Users could in principle use other literals,
+        # even though prunetest should always use Quantity.  For now, I'll leave it
+        # to help identify bugs in prunetest.
+        raise TypeError(
+            f"Expected literal value of type {Quantity}, but was given value of type {type(obj)}"
+        )
+    return obj
+
+
 def iter_expanded(elements):
     """Return iterator over instructions and segments, expanding phases and blocks"""
     for e in elements:
@@ -144,15 +158,7 @@ def label_data(protocol, data, control_var):
     return labeled
 
 
-class Expression:
-    """A mathematical expression which may contain symbolic values"""
-
-    def eval(self, parameters=None):
-        """Evaluate expression (to be implemented by subclass)"""
-        raise NotImplementedError
-
-
-class UnOp(Expression):
+class UnOp:
     fn = {"-": operator.neg, "−": operator.neg}
 
     def __init__(self, operator, operand):
@@ -171,10 +177,10 @@ class UnOp(Expression):
         return all((self.op == other.op, self.rval == other.rval))
 
     def eval(self, parameters=None):
-        return self.fn[self.op](self.rval.eval(parameters))
+        return self.fn[self.op](evaluate(self.rval, parameters))
 
 
-class BinOp(Expression):
+class BinOp:
     fn = {
         "+": operator.add,
         "-": operator.sub,
@@ -203,7 +209,9 @@ class BinOp(Expression):
         )
 
     def eval(self, parameters=None):
-        return self.fn[self.op](self.lval.eval(parameters), self.rval.eval(parameters))
+        return self.fn[self.op](
+            evaluate(self.lval, parameters), evaluate(self.rval, parameters)
+        )
 
 
 class Parameter:
@@ -222,14 +230,14 @@ class Parameter:
         self.name = name
         if isinstance(value, Unit):
             self.units = value
-            self.value = None
-        elif isinstance(value, Q):
-            self.value = value
-            self.units = value.units
+            self._value = None  # bypass value.setter
         else:
-            raise ValueError(
-                f"Parameter must be initialized with either a Unit or a Quantity."
-            )
+            if not hasattr(value, "units"):
+                raise ValueError(
+                    f"Parameter '{self.name}': Parameter initialization with `Parameter(name, value)` requires the existence of `value.units`."
+                )
+            self.units = value.units
+            self.value = value
 
     def __str__(self):
         return f"{self.name} [{self.units}] = {self.value}"
@@ -238,6 +246,25 @@ class Parameter:
         return (
             f"{self.__class__.__name__}({self.name!r}, {self.units!r}, {self.value!r})"
         )
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value):
+        if not isinstance(value, Quantity):
+            try:
+                value = Quantity(value)
+            except ValueError:
+                raise ValueError(
+                    f"Parameter '{self.name}': The input value must be a Quantity or convertible to a Quantity."
+                )
+        if not value.is_compatible_with(self.units):
+            raise ValueError(
+                f"Parameter '{self.name}': The input value {value} has units incompatible with '{self.units}'"
+            )
+        self._value = value
 
     def eval(self):
         return self.value
@@ -344,25 +371,11 @@ class Instruction:
                 segment.add_free(self.variable)
 
 
-class Quantity(ureg.Quantity):
-    """A literal value, with no parameters
-
-    This class exists for two reasons:
-
-    (1) ureg.Quantity does not have an eval() method, but we want other classes to be
-    able to call eval() on any value, without testing if it is parameterized or not.
-
-    (2) Q is shorter than Quantity, and users will type it a lot if they use the
-    Python interface.
-
-    """
-
-    def eval(self, *args, **kwargs):
-        return self
-
-
+# Q is shorter than Quantity, and users will type it a lot if they use prunetest's
+# Python interface.
+Q = ureg.Quantity
+Quantity = ureg.Quantity
 Unit = ureg.Unit
-Q = Quantity
 
 
 class State:
@@ -408,16 +421,16 @@ class SymbolicValue:
         return self.name == other.name
 
     def eval(self, parameters: dict):
-        if parameters is None:
+        if not parameters:
             raise ValueError(
                 "eval() was called on a symbolic value but no parameters were provided."
             )
-        return parameters[self.name].eval()
+        return evaluate(parameters[self.name].value)
 
 
 class RelativeTarget:
     def __init__(self, value):
-        self.value = value
+        self.value: Quantity = value
 
     def __str__(self):
         return f"+ {self.value}"
@@ -426,14 +439,16 @@ class RelativeTarget:
         return f"{self.__class__.__name__}({self.value!r})"
 
     def eval(self, initial_value, parameters=None):
-        return initial_value + self.value.eval(parameters)
+        # TODO: Try to make this compatible with the general evaluate() function, despite
+        #  the need for an initial value.
+        return initial_value + evaluate(self.value, parameters)
 
 
 class Transition:
     def __init__(
         self,
         variable: Variable,
-        target: Union[Q, Expression, RelativeTarget],
+        target: Union[Q, UnOp, BinOp, RelativeTarget],
         path="linear",
     ):
         self.variable = variable
@@ -559,7 +574,7 @@ class Segment:
         if isinstance(t.target, RelativeTarget):
             v1 = t.target.eval(v0, parameters)
         else:
-            v1 = t.target.eval(parameters)
+            v1 = evaluate(t.target, parameters)
         if t.path == "linear":
             # Define pseudo-time s; 0 ≤ s ≤ 1, where s = 0 is the start of the segment
             # and s = 1 is the end.
@@ -576,9 +591,9 @@ class Segment:
                 v0 = initial_state[t.variable]
                 # TODO: refactor this to not have to switch call signatures
                 if isinstance(t.target, RelativeTarget):
-                    Δ = t.target.value.eval(parameters)
+                    Δ = evaluate(t.target.value, parameters)
                 else:
-                    v1 = t.target.eval(parameters)
+                    v1 = evaluate(t.target, parameters)
                     Δ = v1 - v0
                 state[t.variable] = v0 + s_crit * Δ
             else:
@@ -586,14 +601,14 @@ class Segment:
                 state[var] = None
         return State(state)
 
-    def target_state(self, initial_state, parameters=None):
+    def target_state(self, initial_state=None, parameters=None):
         """Return target state for all variables
 
-        `target` is basically an `eval` that returns the segment's final state.  As
-        such, there is no need to specify an independent variable.  The segment's
-        initial state is in general still required to allow calculation of state for
-        relative transitions, but if all transitions are absolutely valued (independent
-        of initial state) an empty dict may be provided for the initial state.
+        `target_state` is basically an `eval_state` that returns the segment's final
+        state.  As such, there is no need to specify an independent variable.  The
+        segment's initial state is required if the segment includes relative
+        transitions.  If all transitions are absolutely valued (independent of initial
+        state) an empty dict may be provided for the initial state.
 
         """
         if parameters is None:
@@ -604,7 +619,7 @@ class Segment:
                 state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
             else:
                 # Absolute target
-                state[t.variable] = t.target.eval(parameters)
+                state[t.variable]: Quantity = evaluate(t.target, parameters)
         return State(state)
 
 
@@ -797,7 +812,9 @@ class Protocol:
             )
         return self.eval_states(variable, [value])[0]
 
-    def eval_states(self, variable: Union[str, Variable], values: Iterable[Q]):
+    def eval_states(
+        self, variable: Union[str, Variable], values: Iterable[Q], parameters=None
+    ):
         """Return succession of states at an independent variable's values
 
         :param variable: The independent variable which has values at which the
@@ -808,12 +825,18 @@ class Protocol:
         :param values: The values of the independent variable at which the protocol's
         state will be calculated.  The values must be monotonically increasing.
 
+        :param parameters: Dictionary of parameter values, used in place of the
+        protocol's dictionary of default parameter values when evaluating expressions.
+
         :returns: Sequence of states.  Each state is a map: variable name → value.
 
         """
-        # Resolve names
+        # Resolve variable names
         if isinstance(variable, str):
             variable = self.variables[variable]
+        # Get parameter values
+        if parameters is None:
+            parameters = self.parameters
         # Evaluate states
         states: Iterable[State] = []
         i = 0  # index into `values`
@@ -833,13 +856,11 @@ class Protocol:
                 segment = segments[j]
                 t0 = last_state[variable]
                 next_state = segment.target_state(
-                    initial_state=last_state, parameters=self.parameters
+                    initial_state=last_state, parameters=parameters
                 )
                 t1 = next_state[variable]
                 if t0 < value < t1:
-                    state = segment.eval_state(
-                        variable, value, last_state, self.parameters
-                    )
+                    state = segment.eval_state(variable, value, last_state, parameters)
                 elif value == t1:
                     # Abscissa is at the end of a segment; get exact values
                     state = next_state

@@ -7,7 +7,7 @@ from warnings import warn
 from typing import Iterable, Optional
 
 from . import protocol, ureg
-
+from .protocol import evaluate
 
 precedence = {"^": 2, "/": 1, "*": 1, "×": 1, "·": 1, "+": 0, "-": 0, "−": 0}
 operators = set(op for g in precedence for op in g)
@@ -337,7 +337,7 @@ class ParametersSection:
         parameters = {}
         for p, d in self.definitions.items():
             if p in self.values:
-                value = self.values[p].read().eval(parameters)
+                value = evaluate(self.values[p].read(), parameters)
             else:
                 value = None
             units = d.units.read()
@@ -483,7 +483,7 @@ class Transition:
 
 
 class Target:
-    def __init__(self, expr):
+    def __init__(self, expr: Expression):
         self.value = expr
 
     def __repr__(self):

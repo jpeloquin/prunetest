@@ -99,6 +99,10 @@ def test_match_unit_degrees():
 
 
 def test_match_unit_distance():
+    # µ (micro sign)
+    assert (m := Unit.match("μm")) is not None
+    assert m == "μm"
+    # μ (greek small letter mu)
     assert (m := Unit.match("μm")) is not None
     assert m == "μm"
     assert (m := Unit.match("mm")) is not None
@@ -107,6 +111,11 @@ def test_match_unit_distance():
     assert m == "m"
     assert (m := Unit.match("km")) is not None
     assert m == "km"
+
+
+def test_match_unit_time():
+    assert (m := Unit.match("h")) is not None
+    assert m == "h"
 
 
 def test_match_unit_frequency():

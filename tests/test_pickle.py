@@ -3,7 +3,7 @@ import dill
 import pickle
 import pytest
 
-from prunetest.protocol import Q, Unit
+from prunetest import Q, Unit
 
 
 @pytest.mark.parametrize("version", [0, 1, 2])

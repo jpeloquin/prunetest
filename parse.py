@@ -6,8 +6,9 @@ import re
 from warnings import warn
 from typing import Iterable, Optional
 
-from . import protocol, ureg
+from . import protocol
 from .protocol import evaluate
+from .units import Quantity
 
 precedence = {"^": 2, "/": 1, "*": 1, "×": 1, "·": 1, "+": 0, "-": 0, "−": 0}
 operators = set(op for g in precedence for op in g)
@@ -160,7 +161,7 @@ class Unit(Token):
     def read(self):
         # TODO: It would make more sense to read the value and quantity together one
         #  level above this
-        return ureg.Quantity(self.text).units
+        return Quantity(self.text).units
 
 
 class NumericValue:
@@ -196,7 +197,7 @@ class NumericValue:
                 return cls(s[:i], num)
 
     def read(self):
-        return protocol.Q(self.num.read(), self.units.read())
+        return Quantity(self.num.read(), self.units.read())
 
 
 class Symbol(Token):

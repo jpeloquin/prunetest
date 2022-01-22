@@ -7,27 +7,9 @@ from collections import OrderedDict, abc
 from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
-import pint
 from scipy.optimize import minimize
 
-
-def fix_pint_registry(ureg: pint.registry.ApplicationRegistry):
-    """Update pint ApplicationRegistry with some fixes"""
-    # Use "h" for hours, not for the Planck constant.  There's an open debate on this
-    # upstream: https://github.com/hgrecco/pint/issues/719
-    ureg.define('@alias hour = h')
-    # Add greek small letter mu as valid micro prefix.  Eventually this should get
-    # fixed upstream.  https://github.com/hgrecco/pint/pull/1347.  We have to use the
-    # _registry parameter due to https://github.com/hgrecco/pint/pull/1403.
-    on_redefinition = ureg._registry._on_redefinition
-    ureg._registry._on_redefinition = "ignore"
-    ureg.define('micro- = 1e-6  = µ- = μ- = u-')
-    ureg._registry._on_redefinition = on_redefinition
-    return ureg
-
-
-# noinspection PyTypeChecker
-ureg = fix_pint_registry(pint.get_application_registry())
+from .units import Unit, Quantity
 
 
 class ControlConflictError(ValueError):
@@ -288,10 +270,10 @@ class Parameter:
 
 
 class Variable:
-    def __init__(self, name, units: Union[str, ureg.Unit]):
+    def __init__(self, name, units: Union[str, Unit]):
         self.name = name
         if isinstance(units, str):
-            self.units = ureg.Unit(units)
+            self.units = Unit(units)
         else:
             self.units = units
 
@@ -382,17 +364,12 @@ class Instruction:
         # really a concern for the Instruction itself.
         if self.variable not in segment.controlled_variables:
             if self.value == "hold":
-                t = Transition(self.variable, RelativeTarget(Q(0, self.variable.units)))
+                t = Transition(
+                    self.variable, RelativeTarget(Quantity(0, self.variable.units))
+                )
                 segment.add_transition(t)
             if self.value == "free":
                 segment.add_free(self.variable)
-
-
-# Q is shorter than Quantity, and users will type it a lot if they use prunetest's
-# Python interface.
-Q = ureg.Quantity
-Quantity = ureg.Quantity
-Unit = ureg.Unit
 
 
 class State:
@@ -465,7 +442,7 @@ class Transition:
     def __init__(
         self,
         variable: Variable,
-        target: Union[Q, UnOp, BinOp, RelativeTarget],
+        target: Union[Quantity, UnOp, BinOp, RelativeTarget],
         path="linear",
     ):
         self.variable = variable
@@ -556,7 +533,7 @@ class Segment:
     def eval_state(
         self,
         variable: Union[str, Variable],
-        value: Q,
+        value: Quantity,
         initial_state: State,
         parameters=None,
     ):
@@ -819,18 +796,21 @@ class Protocol:
                 segments += part.segments
         return segments
 
-    def eval_state(self, variable: Union[str, Variable], value: Q):
+    def eval_state(self, variable: Union[str, Variable], value: Quantity):
         # Resolve names
         if isinstance(variable, str):
             variable = self.variables[variable]
-        if not isinstance(value, Q):
+        if not isinstance(value, Quantity):
             raise ValueError(
                 "Must provide a single Quantity to `eval_state`.  To evaluate multiple states, use `eval_states`."
             )
         return self.eval_states(variable, [value])[0]
 
     def eval_states(
-        self, variable: Union[str, Variable], values: Iterable[Q], parameters=None
+        self,
+        variable: Union[str, Variable],
+        values: Iterable[Quantity],
+        parameters=None,
     ):
         """Return succession of states at an independent variable's values
 

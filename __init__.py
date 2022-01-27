@@ -1,3 +1,4 @@
+from . import plot
 from .protocol import Protocol, Segment, ProtocolData, label_data
 from .parse import read_prune
 from .units import ureg, Unit, Quantity

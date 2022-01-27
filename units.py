@@ -16,6 +16,14 @@ def fix_pint_registry(ureg: pint.registry.ApplicationRegistry):
     return ureg
 
 
+def format_unit(unit):
+    long = f"{unit}"
+    short = f"{unit:~}"
+    if long == "dimensionless":
+        return "1"
+    return short
+
+
 # noinspection PyTypeChecker
 ureg = fix_pint_registry(pint.get_application_registry())
 Quantity = ureg.Quantity

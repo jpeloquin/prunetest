@@ -4,7 +4,7 @@ from pathlib import Path
 from collections import OrderedDict, abc
 
 # Third-party packages
-from typing import Dict, Iterable, Optional, Union
+from typing import Dict, Iterable, List, Optional, Union
 
 import numpy as np
 from scipy.optimize import minimize
@@ -16,6 +16,16 @@ class ControlConflictError(ValueError):
     def __init__(self, var, msg):
         msg = f"Control conflict for variable '{var}': {msg}"
         super().__init__(msg)
+
+
+class InvariantViolation(Exception):
+    """Raise this error if an invariant is violated
+
+    If this error is raised, there is a bug in spamneggs.
+
+    """
+
+    pass
 
 
 def evaluate(obj, parameters=None):
@@ -373,7 +383,12 @@ class Instruction:
 
 
 class State:
-    """A collection of variable values"""
+    """A collection of variable values
+
+    If the value of a prameter is unknown (unconstrained or "free"), its value is
+    represented as None.
+
+    """
 
     def __init__(self, values: Dict[Variable, Quantity]):
         self.by_name = {v.name: q for v, q in values.items()}
@@ -400,6 +415,9 @@ class State:
         for var, val in self.by_var.items():
             s += f"\n  {var.name} [{var.units}] = {val}"
         return s
+
+    def eval(self, parameters):
+        return State({k: evaluate(v, parameters) for k, v in self.by_var.items()})
 
 
 class SymbolicValue:
@@ -435,7 +453,7 @@ class RelativeTarget:
     def eval(self, initial_value, parameters=None):
         # TODO: Try to make this compatible with the general evaluate() function, despite
         #  the need for an initial value.
-        return initial_value + evaluate(self.value, parameters)
+        return evaluate(initial_value, parameters) + evaluate(self.value, parameters)
 
 
 class Transition:
@@ -493,6 +511,10 @@ class Segment:
         return s
 
     @property
+    def variables(self):
+        return [v for v in self._variables.values()]
+
+    @property
     def controlled_variables(self):
         return tuple(t.variable for t in self._transitions.values())
 
@@ -537,12 +559,13 @@ class Segment:
         initial_state: State,
         parameters=None,
     ):
-        """Return succession of states at an independent variable's values
+        """Return the state at a particular value of an independent variable
 
         The independent variable must be strictly monotonically increasing.
         Typically the independent variable is time or pseudo-time.
 
         """
+        # Resolve variable name
         if isinstance(variable, str):
             abscissa = self._variables[variable]
         else:
@@ -550,6 +573,8 @@ class Segment:
         state = {abscissa: value}
         if parameters is None:
             parameters = {}
+        # Make the initial state concrete
+        # initial_state = evaluate(initial_state, parameters)
         # Find where we're going to interpolate the transitions
         try:
             t = self._transitions[abscissa.name]
@@ -595,7 +620,7 @@ class Segment:
                 state[var] = None
         return State(state)
 
-    def target_state(self, initial_state=None, parameters=None):
+    def target_state(self, initial_state={}, parameters={}):
         """Return target state for all variables
 
         `target_state` is basically an `eval_state` that returns the segment's final
@@ -605,15 +630,23 @@ class Segment:
         state) an empty dict may be provided for the initial state.
 
         """
-        if parameters is None:
+        # Workaround for mutable default.  parameters probably won't be mutated here
+        # regardless, but it is passed to other functions so no guarantee.
+        if parameters == {}:
             parameters = {}
         state = {}
-        for t in self._transitions.values():
-            if isinstance(t.target, RelativeTarget):
-                state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
+        for var in self.variables:
+            if var.name in self._transitions:
+                t = self._transitions[var.name]
+                if isinstance(t.target, RelativeTarget):
+                    state[t.variable] = t.target.eval(
+                        initial_state[t.variable], parameters
+                    )
+                else:
+                    # Absolute target
+                    state[t.variable]: Quantity = evaluate(t.target, parameters)
             else:
-                # Absolute target
-                state[t.variable]: Quantity = evaluate(t.target, parameters)
+                state[var] = None
         return State(state)
 
 
@@ -828,22 +861,23 @@ class Protocol:
         :returns: Sequence of states.  Each state is a map: variable name → value.
 
         """
-        # Resolve variable names
+        # Resolve variable name
         if isinstance(variable, str):
             variable = self.variables[variable]
         # Get parameter values
         if parameters is None:
             parameters = self.parameters
         # Evaluate states
-        states: Iterable[State] = []
+        states: List[State] = []
+        initial_state = evaluate(self.initial_state, parameters)
         i = 0  # index into `values`
         segments = self.segments
         j = 0  # index into segments
-        last_state = self.initial_state
+        last_state = initial_state
         for value in values:
             # Check if the abscissa value is in the initial state
-            if value == self.initial_state[variable]:
-                states.append(self.initial_state)
+            if value == initial_state[variable]:
+                states.append(initial_state)
                 i += 1
                 continue
             # Find the segment containing the abscissa (given value).  Note that j is
@@ -870,7 +904,12 @@ class Protocol:
                     j += 1
                     last_state = next_state
                     continue
-                # TODO: Found state; ensure all variables are present
+                # Ensure all variables are present in the calculated state
+                for var in self.variables.values():
+                    if not var in state.by_var:
+                        raise InvariantViolation(
+                            f"Variable '{var}' was defined in {Protocol} but not in a state calculated from that protocol.  This indicates a bug in spamneggs."
+                        )
                 states.append(state)
                 break
         # TODO: Check for out-of-bounds error.  Maybe add a special terminating segment

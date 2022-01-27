@@ -80,7 +80,7 @@ class Segment:
                     "The default is a linear transition."
                 )
             transitions.append(t.read(variables, parameters))
-        return protocol.Segment(transitions)
+        return protocol.Segment(transitions, variables.values())
 
 
 class Instruction:

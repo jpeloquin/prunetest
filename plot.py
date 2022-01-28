@@ -53,9 +53,9 @@ def protocol_check(protocol, data, abscissa="t", n=20):
             ax = fig.add_subplot(gs[i, 0], sharex=axarr[0])
         else:
             ax = fig.add_subplot(gs[i, 0])
-        y = [s[var].to(var.units).m if s[var] is not None else np.nan for s in states]
-        y = Quantity(np.array(y), var.units)
-        ax.plot(times, y, "-k")
+        y = np.array([s[var].to(var.units).m if s[var] is not None else np.nan for s in states])
+        t = times.to(xvar.units).m
+        ax.plot(t, y, "-k")
         # Plot a marker at every constrained ↔ free transition
         m = np.zeros(y.shape, dtype=bool)
         d = np.diff(np.isnan(y).astype(int))
@@ -63,7 +63,7 @@ def protocol_check(protocol, data, abscissa="t", n=20):
         m[:-1][d == 1] = True
         # Free → constrained
         m[1:][d == -1] = True
-        ax.plot(times[m], y[m], "k", marker=".", linestyle="none")
+        ax.plot(t[m], y[m], "k", marker=".", linestyle="none")
         # Format plot
         ax.set_ylabel(f"{nm} [{format_unit(var.units)}]")
         hide_spines(ax)

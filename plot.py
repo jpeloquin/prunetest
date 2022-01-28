@@ -45,6 +45,7 @@ def protocol_check(protocol, data, abscissa="t", n=20):
     states = protocol.eval_states(xvar, times, protocol.parameters)
     i = 0
     axarr = []
+    axes = {}
     for nm in protocol.variables:
         var = protocol.variables[nm]
         if var == xvar:
@@ -71,5 +72,6 @@ def protocol_check(protocol, data, abscissa="t", n=20):
             ax.xaxis.set_visible(False)
         axarr.append(ax)
         i += 1
+        axes[nm] = ax
     axarr[-1].set_xlabel(f"{abscissa} [{format_unit(xvar.units)}]")
-    return fig
+    return fig, axes

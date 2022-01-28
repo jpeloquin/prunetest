@@ -56,7 +56,7 @@ def protocol_check(protocol, data, abscissa="t", n=20):
             ax = fig.add_subplot(gs[i, 0])
         y = np.array([s[var].to(var.units).m if s[var] is not None else np.nan for s in states])
         t = times.to(xvar.units).m
-        ax.plot(t, y, "-k")
+        ax.plot(t, y, "-k", label="Protocol")
         # Plot a marker at every constrained ↔ free transition
         m = np.zeros(y.shape, dtype=bool)
         d = np.diff(np.isnan(y).astype(int))

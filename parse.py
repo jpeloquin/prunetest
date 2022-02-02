@@ -329,6 +329,8 @@ class ParametersSection:
             if m := Assignment.match(ln):
                 values[m.parameter.text] = m.expression
                 continue
+            if Comment.match(ln):
+                continue
             raise ParseError(
                 f"Could not parse the following line as part of the 'Parameters' section:\n{ln}"
             )
@@ -365,6 +367,8 @@ class VariablesSection:
                 continue
             if m := Definition.match(ln):
                 definitions[m.parameter.text] = m
+                continue
+            if Comment.match(ln):
                 continue
             raise ParseError(
                 f"Could not parse the following line as part of the 'Variables' section:\n{ln}"

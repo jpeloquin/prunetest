@@ -21,7 +21,7 @@ def hide_spines(ax):
         ax.spines[s].set_visible(False)
 
 
-def protocol_check(protocol, data, abscissa="t", n=20):
+def plot_protocol(protocol, abscissa="t", n=20):
     """Return plot of test protocol compared with data"""
     if isinstance(abscissa, str):
         xvar = protocol.variables[abscissa]
@@ -54,7 +54,9 @@ def protocol_check(protocol, data, abscissa="t", n=20):
             ax = fig.add_subplot(gs[i, 0], sharex=axarr[0])
         else:
             ax = fig.add_subplot(gs[i, 0])
-        y = np.array([s[var].to(var.units).m if s[var] is not None else np.nan for s in states])
+        y = np.array(
+            [s[var].to(var.units).m if s[var] is not None else np.nan for s in states]
+        )
         t = times.to(xvar.units).m
         ax.plot(t, y, "-k", label="Protocol")
         # Plot a marker at every constrained ↔ free transition
@@ -74,4 +76,37 @@ def protocol_check(protocol, data, abscissa="t", n=20):
         i += 1
         axes[nm] = ax
     axarr[-1].set_xlabel(f"{abscissa} [{format_unit(xvar.units)}]")
+    return fig, axes
+
+
+def compare_protocol(protocol, data, abscissa="t", varmap={}, n=20):
+    """Return plot of test protocol compared with data"""
+    fig, axes = plot_protocol(protocol, abscissa=abscissa, n=n)
+
+    def split_colname(col):
+        """Split 'name [unit]' column name into (name, unit)"""
+        col = col.strip()
+        if col.endswith("]"):
+            i = col.rfind("[")
+            if i != -1:
+                nm = col[:i].rstrip()
+                unit = col[i + 1 : -1]
+                return nm, unit
+        return col, None
+
+    datavars = {}
+    for col in data.columns:
+        dvar, dunit = split_colname(col)
+        datavars[dvar] = (col, dvar, dunit)
+    # Handle time / abscissa
+    dvar = varmap[abscissa]
+    col, dvar, dunit = datavars[dvar]
+    t = Quantity(data[col].values, dunit).to(protocol.variables[abscissa].units).m
+    for var, ax in axes.items():
+        if var not in varmap:
+            continue
+        col, dvar, dunit = datavars[varmap[var]]
+        y = Quantity(data[col].values, dunit).to(protocol.variables[var].units).m
+        ax.plot(t, y, ":", color="firebrick", label="Data")
+        ax.legend()
     return fig, axes

@@ -394,6 +394,12 @@ class State:
         self.by_name = {v.name: q for v, q in values.items()}
         self.by_var = {v: q for v, q in values.items()}  # copy
 
+    def __eq__(self, other):
+        if isinstance(other, State):
+            return self.by_var == other.by_var
+        else:
+            return NotImplemented  # fallback to other object
+
     def __getitem__(self, item):
         if isinstance(item, str):
             return self.by_name[item]

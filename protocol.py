@@ -372,14 +372,14 @@ class Instruction:
     def apply_to_segment(self, segment: "Segment"):
         # We could check if the variable was already controlled, but that's not
         # really a concern for the Instruction itself.
-        if self.variable not in segment.controlled_variables:
+        if self.variable not in segment.constrained_vars:
             if self.value == "hold":
                 t = Transition(
                     self.variable, RelativeTarget(Quantity(0, self.variable.units))
                 )
-                segment.add_transition(t)
+                segment.set_constraint(t)
             if self.value == "free":
-                segment.add_free(self.variable)
+                segment.set_unconstrained(self.variable)
 
 
 class State:
@@ -459,7 +459,12 @@ class RelativeTarget:
     def eval(self, initial_value, parameters=None):
         # TODO: Try to make this compatible with the general evaluate() function, despite
         #  the need for an initial value.
-        return evaluate(initial_value, parameters) + evaluate(self.value, parameters)
+        if initial_value is None:
+            return None
+        else:
+            return evaluate(initial_value, parameters) + evaluate(
+                self.value, parameters
+            )
 
 
 class Transition:
@@ -484,32 +489,17 @@ class Segment:
     def __init__(
         self,
         transitions: Iterable[Transition],
-        variables: Optional[Iterable[Variable]] = None,
+        extra_vars: Iterable[Variable] = set(),
     ):
         """Return Segment object"""
         self._transitions: Dict[str, Transition] = {
             t.variable.name: t for t in transitions
         }
-        if variables is not None:
-            self._variables = {v.name: v for v in variables}
-            # Check for use of undeclared variables, since a list of declared
-            # variables was provided.
-            for t in self._transitions.values():
-                if t.variable.name not in self._variables:
-                    raise ValueError(
-                        f"Variable {t.variable.name} was referenced in a Segment, but was not present in the list of variables provided to the Segment."
-                    )
-        else:
-            # Build a list of used variables.
-            self._variables = {
-                t.variable.name: t.variable for t in self._transitions.values()
-            }
+        self._free = {v.name: v for v in set(extra_vars) - self.constrained_vars}
 
     def __repr__(self):
-        controlled = set(t.variable for t in self._transitions.values())
-        free = set(self._variables.values()) - controlled
-        parts = [f"{self._transitions[v.name]}" for v in controlled] + [
-            f"{v!r} → free" for v in free
+        parts = [f"{self._transitions[v.name]}" for v in self.constrained_vars] + [
+            f"{v!r} → free" for v in self.unconstrained_vars
         ]
         prefix = f"{self.__class__.__name__}({{"
         suffix = "})"
@@ -518,83 +508,79 @@ class Segment:
 
     @property
     def variables(self):
-        return [v for v in self._variables.values()]
+        return self.constrained_vars | self.unconstrained_vars
 
     @property
-    def controlled_variables(self):
-        return tuple(t.variable for t in self._transitions.values())
+    def constrained_vars(self):
+        return set(t.variable for t in self._transitions.values())
 
     @property
-    def free_variables(self):
-        return tuple(
-            v for nm, v in self._variables.items() if nm not in self._transitions
-        )
+    def unconstrained_vars(self):
+        return set(self._free.values())
 
     @property
     def transitions(self):
         return self._transitions
 
-    def add_free(self, variable):
-        """Add a free variable to the segment (idempotent, mutates)
+    def set_constraint(self, transition):
+        """Constrain a variable in the segment (idempotent, mutates)
 
-        This method is meant to facilitate applying control instructions during
-        initialization of a Protocol object.  Initializing a Segment all at once is
-        recommended.
-
+        The variable is added to the segment if necessary.
         """
-        if variable.name in self._transitions:
-            del self._transitions[variable.name]
-        else:
-            self._variables[variable.name] = variable
-
-    def add_transition(self, transition):
-        """Add a transition to the segment (idempotent, mutates)
-
-        `Segment.variables` must be updated when a transition is added.  This method
-        is meant to facilitate applying control instructions during initialization of
-        a Protocol object.  Initializing a Segment all at once is recommended.
-
-        """
+        # TODO: Add test to make sure this overrides a "free" variable
         self._transitions[transition.variable.name] = transition
-        self._variables[transition.variable.name] = transition.variable
+        if transition.variable.name in self._free:
+            del self._free[transition.variable.name]
+
+    def set_unconstrained(self, var):
+        """Unconstrain a variable in the segment (idempotent, mutates)
+
+        The variable is added to the segment if necessary.
+        """
+        if var.name in self._transitions:
+            del self._transitions[var.name]
+        else:
+            self._free[var.name] = var
 
     def eval_state(
         self,
-        variable: Union[str, Variable],
+        xvar: Union[str, Variable],
         value: Quantity,
         initial_state: State,
         parameters=None,
+        extra_vars: Iterable[Variable] = set(),
     ):
         """Return the state at a particular value of an independent variable
 
         The independent variable must be strictly monotonically increasing.
         Typically the independent variable is time or pseudo-time.
 
+        :param extra_vars: Variables that must be included in the calculated state as
+        unconstrained variables if they are not already constrained by the segment.
+        If any variable in this list is constrained by the segment, it will be
+        instead calculated according to those constraints, exactly as if it were not
+        in this list.
+
         """
-        # Resolve variable name
-        if isinstance(variable, str):
-            abscissa = self._variables[variable]
-        else:
-            abscissa = variable
-        state = {abscissa: value}
         if parameters is None:
             parameters = {}
+        # Resolve pseudotime variable's name
+        if isinstance(xvar, str):
+            xvar = self._transitions[xvar].variable
         # Make the initial state concrete
         # initial_state = evaluate(initial_state, parameters)
         # Find where we're going to interpolate the transitions
         try:
-            t = self._transitions[abscissa.name]
+            t = self._transitions[xvar.name]
         except KeyError:
             raise ValueError(
-                f"Variable '{abscissa.name}' is not controlled in this segment"
+                f"Variable '{xvar.name}' is not controlled in this segment"
             )
         # Interpolate the abscissa
         try:
-            v0 = initial_state[abscissa]
+            v0 = initial_state[xvar]
         except KeyError:
-            raise ValueError(
-                f"Variable '{abscissa.name}' not in provided initial state."
-            )
+            raise ValueError(f"Variable '{xvar.name}' not in provided initial state.")
         # TODO: refactor this to not have to switch call signatures
         if isinstance(t.target, RelativeTarget):
             v1 = t.target.eval(v0, parameters)
@@ -606,27 +592,33 @@ class Segment:
             s_crit = ((value - v0) / (v1 - v0)).m
         else:
             raise NotImplementedError
-        # Interpolate the variables
-        for nm, var in self._variables.items():
-            if var == abscissa:
+        # Calculate the state by variable interpolation
+        state = {xvar: value}
+        for var in self.constrained_vars:
+            if var == xvar:
                 # We already did the abscissa variable
                 continue
-            if nm in self.transitions:
-                t = self.transitions[nm]
-                v0 = initial_state[t.variable]
-                # TODO: refactor this to not have to switch call signatures
-                if isinstance(t.target, RelativeTarget):
-                    Δ = evaluate(t.target.value, parameters)
-                else:
-                    v1 = evaluate(t.target, parameters)
-                    Δ = v1 - v0
-                state[t.variable] = v0 + s_crit * Δ
-            else:
-                # Variable is free
+            t = self.transitions[var.name]
+            v0 = initial_state[t.variable]
+            # TODO: When support for time shift operators (referencing past values)
+            #  is added, refactor this to store the variable's offset relative to the
+            #  last unconstrained value.
+            if v0 is None:
                 state[var] = None
+                continue
+            # TODO: refactor this to not have to switch call signatures
+            if isinstance(t.target, RelativeTarget):
+                Δ = evaluate(t.target.value, parameters)
+            else:
+                v1 = evaluate(t.target, parameters)
+                Δ = v1 - v0
+            state[t.variable] = v0 + s_crit * Δ
+        free = self.unconstrained_vars | (set(extra_vars) - self.constrained_vars)
+        for var in free:
+            state[var] = None
         return State(state)
 
-    def target_state(self, initial_state={}, parameters={}):
+    def target_state(self, initial_state={}, parameters={}, extra_vars=set()):
         """Return target state for all variables
 
         `target_state` is basically an `eval_state` that returns the segment's final
@@ -635,24 +627,28 @@ class Segment:
         transitions.  If all transitions are absolutely valued (independent of initial
         state) an empty dict may be provided for the initial state.
 
+        :param extra_vars: Variables that must be included in the target state as
+        unconstrained variables if not constrained by the segment's target state. If
+        any variable in this list is already constrained by the segment, it will be
+        instead calculated according to those constraints, exactly as if it were not
+        in this list.
+
         """
         # Workaround for mutable default.  parameters probably won't be mutated here
         # regardless, but it is passed to other functions so no guarantee.
         if parameters == {}:
             parameters = {}
         state = {}
-        for var in self.variables:
-            if var.name in self._transitions:
-                t = self._transitions[var.name]
-                if isinstance(t.target, RelativeTarget):
-                    state[t.variable] = t.target.eval(
-                        initial_state[t.variable], parameters
-                    )
-                else:
-                    # Absolute target
-                    state[t.variable]: Quantity = evaluate(t.target, parameters)
+        for var in self.constrained_vars:
+            t = self._transitions[var.name]
+            if isinstance(t.target, RelativeTarget):
+                state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
             else:
-                state[var] = None
+                # Absolute target
+                state[t.variable]: Quantity = evaluate(t.target, parameters)
+        free = self.unconstrained_vars | (set(extra_vars) - self.constrained_vars)
+        for var in free:
+            state[var] = None
         return State(state)
 
 
@@ -739,10 +735,10 @@ class Protocol:
             # A list of variables was provided.  Ensure no undefined variables are used.
             self.variables = {var.name: var for var in variables}
             for seg in self.segments:
-                for nm, var in seg._variables.items():
-                    if nm not in self.variables:
+                for var in seg.variables:
+                    if var.name not in self.variables:
                         raise ValueError(
-                            f"Variable {nm} was referenced in a Segment, but was not present in the list of variables provided to the Protocol."
+                            f"{var} was referenced in this Segment, but was not present in the list of variables provided to the Protocol."
                         )
         # Expand defaults and check/populate variables list
         active = {}  # active defaults
@@ -850,6 +846,7 @@ class Protocol:
         variable: Union[str, Variable],
         values: Iterable[Quantity],
         parameters=None,
+        extra_vars: Iterable[Variable] = set(),
     ):
         """Return succession of states at an independent variable's values
 
@@ -873,6 +870,8 @@ class Protocol:
         # Get parameter values
         if parameters is None:
             parameters = self.parameters
+        # Get list of all variables
+        extra_vars = set(self.variables.values()) | extra_vars
         # Evaluate states
         states: List[State] = []
         initial_state = evaluate(self.initial_state, parameters)
@@ -893,11 +892,15 @@ class Protocol:
                 segment = segments[j]
                 t0 = last_state[variable]
                 next_state = segment.target_state(
-                    initial_state=last_state, parameters=parameters
+                    initial_state=last_state,
+                    parameters=parameters,
+                    extra_vars=extra_vars,
                 )
                 t1 = next_state[variable]
                 if t0 < value < t1:
-                    state = segment.eval_state(variable, value, last_state, parameters)
+                    state = segment.eval_state(
+                        variable, value, last_state, parameters, extra_vars
+                    )
                 elif value == t1:
                     # Abscissa is at the end of a segment; get exact values
                     state = next_state
@@ -914,7 +917,7 @@ class Protocol:
                 for var in self.variables.values():
                     if not var in state.by_var:
                         raise InvariantViolation(
-                            f"Variable '{var}' was defined in {Protocol} but not in a state calculated from that protocol.  This indicates a bug in spamneggs."
+                            f"Variable '{var}' was defined in {Protocol} but not in a state calculated from that protocol."
                         )
                 states.append(state)
                 break

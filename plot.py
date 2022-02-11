@@ -1,7 +1,10 @@
+from math import ceil
+from typing import Optional
+
 import matplotlib as mpl
 from matplotlib.backends.backend_template import FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.gridspec import GridSpec
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import numpy as np
 
 from .protocol import evaluate
@@ -14,6 +17,7 @@ mpl.rcParams["ytick.color"] = COLOR_DEEMPH
 mpl.rcParams["xtick.labelcolor"] = COLOR_DEEMPH
 mpl.rcParams["ytick.labelcolor"] = COLOR_DEEMPH
 mpl.rcParams["figure.autolayout"] = True
+DEFAULT_PTS_PER_SEGMENT = 100
 
 
 def hide_spines(ax):
@@ -21,8 +25,8 @@ def hide_spines(ax):
         ax.spines[s].set_visible(False)
 
 
-def plot_protocol(protocol, abscissa="t", n=20):
-    """Return plot of test protocol compared with data"""
+def plot_protocol(protocol, abscissa="t", n=DEFAULT_PTS_PER_SEGMENT):
+    """Return plot of entire test protocol"""
     if isinstance(abscissa, str):
         xvar = protocol.variables[abscissa]
     else:
@@ -79,9 +83,8 @@ def plot_protocol(protocol, abscissa="t", n=20):
     return fig, axes
 
 
-def compare_protocol(protocol, data, abscissa="t", varmap={}, n=20):
-    """Return plot of test protocol compared with data"""
-    fig, axes = plot_protocol(protocol, abscissa=abscissa, n=n)
+def translate_data(protocol, data, varmap={}):
+    """Return renamed data variables with correct units"""
 
     def split_colname(col):
         """Split 'name [unit]' column name into (name, unit)"""
@@ -94,19 +97,112 @@ def compare_protocol(protocol, data, abscissa="t", varmap={}, n=20):
                 return nm, unit
         return col, None
 
-    datavars = {}
+    varmapr = {v: k for k, v in varmap.items()}
+    tdata = {}
     for col in data.columns:
         dvar, dunit = split_colname(col)
-        datavars[dvar] = (col, dvar, dunit)
+        nm = varmapr.get(dvar, dvar)
+        tdata[nm] = Quantity(data[col].values, dunit)
+    out = {}
+    for nm, var in protocol.variables.items():
+        out[nm] = tdata.get(nm, Quantity(np.full(len(data), np.nan), var.units))
+    return out
+
+
+def check_data_all(protocol, data, abscissa="t", varmap={}, n=DEFAULT_PTS_PER_SEGMENT):
+    """Return plot comparing entire test protocol with data"""
+    fig, axes = plot_protocol(protocol, abscissa=abscissa, n=n)
+    data = translate_data(protocol, data, varmap)
     # Handle time / abscissa
-    dvar = varmap[abscissa]
-    col, dvar, dunit = datavars[dvar]
-    t = Quantity(data[col].values, dunit).to(protocol.variables[abscissa].units).m
+    t = data[abscissa].to(protocol.variables[abscissa].units).m
     for var, ax in axes.items():
-        if var not in varmap:
-            continue
-        col, dvar, dunit = datavars[varmap[var]]
-        y = Quantity(data[col].values, dunit).to(protocol.variables[var].units).m
+        y = data[var].to(protocol.variables[var].units).m
         ax.plot(t, y, ":", color="firebrick", label="Data")
         ax.legend()
     return fig, axes
+
+
+def check_data_by_transition(
+    protocol,
+    data,
+    abscissa="t",
+    varmap={},
+    n=DEFAULT_PTS_PER_SEGMENT,
+    t_span: Optional[Quantity] = None,
+):
+    """Return plot comparing test protocol with data at each segment transition"""
+    if isinstance(abscissa, str):
+        xvar = protocol.variables[abscissa]
+    else:
+        xvar = abscissa
+    data = translate_data(protocol, data, varmap)
+    data_t = data[abscissa].to(protocol.variables[abscissa].units).m
+    nvar = len(protocol.variables) - 1
+    nseg = len(protocol.segments)
+    nplt_w = 4
+    nplt_h = ceil(nseg / nplt_w)
+    szplt_w = 4.0
+    szplt_h = 1 + 1.5 * nvar
+    fig = Figure(figsize=(nplt_w * szplt_w, nplt_h * szplt_h))
+    gs0 = GridSpec(nplt_h, nplt_w)
+    segs = [protocol.segments[0]]
+    trans_states = [
+        evaluate(protocol.initial_state, protocol.parameters),
+        segs[0].target_state(protocol.initial_state, protocol.parameters),
+    ]
+    for i, seg in enumerate(protocol.segments[1:]):
+        segs.append(seg)
+        trans_states.append(segs[1].target_state(trans_states[1], protocol.parameters))
+        t_a = trans_states[0][xvar]
+        t_b = trans_states[1][xvar]
+        t_c = trans_states[2][xvar]
+        if t_span is None:
+            t_span = 0.5 * min(t_b - t_a, t_c - t_b)
+        t_left = np.linspace(t_b - t_span, t_b, n // 2 + n % 2)
+        t_right = np.linspace(t_b, t_b + t_span, n // 2)[1:]
+        states = [
+            segs[0].eval_state(xvar, t, trans_states[0], protocol.parameters)
+            for t in t_left
+        ] + [
+            segs[1].eval_state(xvar, t, trans_states[1], protocol.parameters)
+            for t in t_right
+        ]
+        t = np.hstack([t_left, t_right]).to(xvar.units).m
+        gs = GridSpecFromSubplotSpec(
+            nvar, 1, subplot_spec=gs0[np.unravel_index(i, (nplt_h, nplt_w))]
+        )
+        j = 0
+        for nm, var in protocol.variables.items():
+            if var == xvar:
+                continue
+            # Plot protocol
+            y = np.array(
+                [
+                    s[var].to(var.units).m if s[var] is not None else np.nan
+                    for s in states
+                ]
+            )
+            ax = fig.add_subplot(gs[j, 0])
+            ax.plot(t, y, "-k", label="Protocol")
+            # Plot data
+            m = (t[0] <= data_t) & (data_t <= t[-1])
+            m = np.hstack([[False], m, [False]])
+            m = (m | np.roll(m, -1) | np.roll(m, 1))[1:-1]
+            data_y = data[var.name].to(var.units).m
+            ax.plot(
+                data_t[m], data_y[m], ":", marker=".", color="firebrick", label="Data"
+            )
+            # Format plot
+            if j == 0:
+                ax.legend()
+                ax.set_title(f"Segment {i} → {i + 1}")
+            ax.set_ylabel(f"{nm} [{format_unit(var.units)}]")
+            hide_spines(ax)
+            if j == nvar - 1:
+                ax.set_xlabel(f"{abscissa} [{format_unit(xvar.units)}]")
+            else:
+                ax.xaxis.set_visible(False)
+            j += 1
+        del trans_states[0]
+        del segs[0]
+    return fig

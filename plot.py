@@ -143,8 +143,11 @@ def check_data_by_transition(
     nplt_h = ceil(nseg / nplt_w)
     szplt_w = 4.0
     szplt_h = 1 + 1.5 * nvar
-    fig = Figure(figsize=(nplt_w * szplt_w, nplt_h * szplt_h))
-    gs0 = GridSpec(nplt_h, nplt_w)
+    fig_w = nplt_w * szplt_w
+    fig_h = nplt_h * szplt_h
+    fig = Figure(figsize=(fig_w, fig_h))
+    fig.set_tight_layout(False)
+    gs0 = GridSpec(nplt_h, nplt_w, figure=fig)
     segs = [protocol.segments[0]]
     trans_states = [
         evaluate(protocol.initial_state, protocol.parameters),
@@ -169,7 +172,9 @@ def check_data_by_transition(
         ]
         t = np.hstack([t_left, t_right]).to(xvar.units).m
         gs = GridSpecFromSubplotSpec(
-            nvar, 1, subplot_spec=gs0[np.unravel_index(i, (nplt_h, nplt_w))]
+            nvar,
+            1,
+            subplot_spec=gs0[np.unravel_index(i, (nplt_h, nplt_w))],
         )
         j = 0
         for nm, var in protocol.variables.items():
@@ -205,4 +210,7 @@ def check_data_by_transition(
             j += 1
         del trans_states[0]
         del segs[0]
+    # Would be better to use constrained layout, but in matplotlib 3.5.1 all the
+    # top-level gridspecs overlapped.  Not sure why.
+    fig.tight_layout(h_pad=4, w_pad=2)
     return fig

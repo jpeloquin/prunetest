@@ -130,6 +130,38 @@ class Phase:
         return protocol.Phase(self.name, elements)
 
 
+class Block:
+    """Parse data for Block
+
+    A Block repeats a sequence of elements.
+
+    """
+    def __init__(self, elements, n):
+        self.repeats = n
+        self.elements = elements
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.elements!r}, {self.n!r})"
+
+    def iter_expand(self):
+        for e in self.elements:
+            if isinstance(e, Segment) or isinstance(e, Instruction):
+                yield e
+            elif hasattr(e, "iter_expand"):
+                for e2 in e.iter_expand():
+                    yield e2
+            elif hasattr(e, "segments"):
+                for e2 in e.segments:
+                    yield e2
+
+    def read(self, variables, parameters=None):
+        """Return protocol.Block instance from parse data"""
+        read_elements = []
+        for e in self.elements:
+            read_elements.append(e.read(variables, parameters))
+        return protocol.Block(read_elements, self.repeats)
+
+
 # Classes for parsing expressions
 
 
@@ -535,26 +567,6 @@ def match_comment(s) -> bool:
 # Parsing functions
 
 
-def expand_block(elements):
-    """Expand blocks of cycles to individual segments"""
-    expanded = []
-    active = []
-    for e in reversed(elements):
-        if e[0] == "segment":
-            active.append(e)
-        elif e[0] == "block":
-            active = active * e[1]["n"]
-            expanded += active
-            active = []
-            expanded.append(e)
-        else:
-            expanded += active
-            active = []
-            expanded.append(e)
-    expanded.reverse()
-    return expanded
-
-
 def parse_expression(s):
     """Return syntax tree for expression"""
 
@@ -669,6 +681,39 @@ def parse_protocol_section(lines):
                 continue
             break
         return Phase(name, elements)
+
+    def match_block():
+        """Match block definition & advance line number"""
+        nonlocal i
+        if not lines[i].startswith("repeat"):
+            return None
+        # Find number of repeats
+        kw, count = lines[i].strip().split(",")
+        n = int(count.rstrip("cycles").strip())
+        i += 1
+        # Find all elements in block
+        elements = []
+        while i < len(lines):
+            if is_ws(lines[i]):
+                i += 1
+                continue
+            if match_comment(lines[i]):
+                i += 1
+                continue
+            if m := match_instruction():
+                i += 1
+                elements.append(m)
+                continue
+            if m := match_phase():
+                i += 1
+                elements.append(m)
+                continue
+            if m := match_segment():
+                i += 1
+                elements.append(m)
+                continue
+        # TODO: Figure out how to nest blocks
+        return Block(elements, n)
 
     def match_instruction():
         """Match keyword-prefixed instruction"""
@@ -787,12 +832,9 @@ def parse_protocol_section(lines):
             protocol.append(m)
             continue
         # Block
-        if lines[i].startswith("repeat"):
-            ln = lines[i]
-            kw, count = ln.strip().split(",")
-            n = int(count.rstrip("cycles").strip())
-            protocol.append(("block", {"n": n}))
-            i += 1
+        if m := match_block():
+            # match_block advances line number
+            protocol.append(m)
             continue
         # Segment
         if m := match_segment():

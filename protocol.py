@@ -658,7 +658,7 @@ class Block:
         self.n = n
 
     def __repr__(self):
-        return f"self.__class__.__name__({self.cycle}, {self.n})"
+        return f"{self.__class__.__name__}({self.cycle}, {self.n})"
 
     def __iter__(self):
         """Return iterator over segments with cycle repeats"""

@@ -897,6 +897,9 @@ class Protocol:
                     extra_vars=extra_vars,
                 )
                 t1 = next_state[variable]
+                # Check that the abscissa is defined
+                if t0 is None or t1 is None:
+                    raise ValueError(f"Variable '{variable.name}' is free-floating and is therefore not a valid abscissa along which to evaluate state.  The abscissa must be strictly monotonically increasing.")
                 if t0 < value < t1:
                     state = segment.eval_state(
                         variable, value, last_state, parameters, extra_vars

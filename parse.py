@@ -136,6 +136,7 @@ class Block:
     A Block repeats a sequence of elements.
 
     """
+
     def __init__(self, elements, n):
         self.repeats = n
         self.elements = elements

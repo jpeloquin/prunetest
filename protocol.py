@@ -1,10 +1,8 @@
 # Base packages
+from numbers import Number
 import operator
-from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Union
 from collections import OrderedDict, abc
-
-# Third-party packages
-from typing import Dict, Iterable, List, Optional, Union
 
 import numpy as np
 from scipy.optimize import minimize
@@ -629,9 +627,8 @@ class Segment:
 
         :param extra_vars: Variables that must be included in the target state as
         unconstrained variables if not constrained by the segment's target state. If
-        any variable in this list is already constrained by the segment, it will be
-        instead calculated according to those constraints, exactly as if it were not
-        in this list.
+        any variable in `extra_vars` is already constrained by the segment, it will
+        be calculated according to the segment's constraints as usual.
 
         """
         # Workaround for mutable default.  parameters probably won't be mutated here
@@ -832,6 +829,11 @@ class Protocol:
         return segments
 
     def eval_state(self, variable: Union[str, Variable], value: Quantity):
+        """Return state at a given value for an independent variable
+
+        The independent variation (abscissa) must be strictly monotonically increasing.
+
+        """
         # Resolve names
         if isinstance(variable, str):
             variable = self.variables[variable]
@@ -847,7 +849,7 @@ class Protocol:
         values: Iterable[Quantity],
         parameters=None,
         extra_vars: Iterable[Variable] = set(),
-    ):
+    ) -> List[dict]:
         """Return succession of states at an independent variable's values
 
         :param variable: The independent variable which has values at which the
@@ -899,7 +901,9 @@ class Protocol:
                 t1 = next_state[variable]
                 # Check that the abscissa is defined
                 if t0 is None or t1 is None:
-                    raise ValueError(f"Variable '{variable.name}' is free-floating and is therefore not a valid abscissa along which to evaluate state.  The abscissa must be strictly monotonically increasing.")
+                    raise ValueError(
+                        f"Variable '{variable.name}' is free-floating and is therefore not a valid abscissa along which to evaluate state.  The abscissa must be strictly monotonically increasing."
+                    )
                 if t0 < value < t1:
                     state = segment.eval_state(
                         variable, value, last_state, parameters, extra_vars
@@ -927,3 +931,24 @@ class Protocol:
         # TODO: Check for out-of-bounds error.  Maybe add a special terminating segment
         # with infinite duration?
         return tuple(states)
+
+    def eval_pt(self, t: Sequence[Number]) -> dict[str, List]:
+        """Return succession of states at provided pseudotime values
+
+        :Sequence t: Sequence of pseduotime values.  Pseudotime t is a real number,
+        with a valid range [0, n] where n is the number of segments.  At t = 0,
+        the state is the protocol's initial state.  At t = i, the state is the target
+        state of the i'th segment.  At non-integer values of t, the returned state is
+        calculated by interpolation.  States the are uncalculable (e.g., outside the
+        range [0, n]) are returned as None.
+
+        """
+        n = len(self.segments)
+        state = evaluate(self.initial_state, self.parameters)
+        values = {var: [state[var].to(var.units).m] for var in self.variables.values()}
+        for s in self.segments:
+            state = s.target_state(state, self.parameters)
+            for var, value in state.by_var.items():
+                values[var].append(value.to(var.units).m if value is not None else np.nan)
+        out = {nm: np.interp(t, np.arange(n + 1), values[self.variables[nm]]) for nm in self.variables}
+        return out

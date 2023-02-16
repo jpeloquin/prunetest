@@ -3,9 +3,6 @@ import pint
 
 def fix_pint_registry(ureg: pint.registry.ApplicationRegistry):
     """Update pint ApplicationRegistry with some fixes"""
-    # Use "h" for hours, not for the Planck constant.  There's an open debate on this
-    # upstream: https://github.com/hgrecco/pint/issues/719
-    ureg.define("@alias hour = h")
     # Add greek small letter mu as valid micro prefix.  Eventually this should get
     # fixed upstream.  https://github.com/hgrecco/pint/pull/1347.  We have to use the
     # _registry parameter due to https://github.com/hgrecco/pint/pull/1403.

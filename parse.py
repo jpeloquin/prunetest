@@ -938,7 +938,7 @@ def _nested_set(dic, path, value):
     dic[path[-1]] = value
 
 
-def read_prune(p):
+def read_prune(p) -> protocol.Protocol:
     """Read a file as a prunetest protocol
 
     :param p: File path or a file-like object with a readlines method.

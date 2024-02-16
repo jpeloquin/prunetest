@@ -8,7 +8,7 @@ from typing import Iterable, Optional
 
 from . import protocol
 from .protocol import evaluate
-from .units import Quantity
+from .units import Quantity, ureg
 
 precedence = {"^": 2, "/": 1, "*": 1, "×": 1, "·": 1, "+": 0, "-": 0, "−": 0}
 operators = set(op for g in precedence for op in g)
@@ -713,6 +713,9 @@ def parse_protocol_section(lines):
                 i += 1
                 elements.append(m)
                 continue
+            # If anything else other than whitespace or the above elements, the block
+            # has terminated
+            break
         # TODO: Figure out how to nest blocks
         return Block(elements, n)
 
@@ -909,7 +912,8 @@ def read_default_rates(lines):
                 r"(?P<var>\w+)\((\w+)\)"
                 r"\s*=\s*"
                 r"\w+\(\w+,\s*"
-                r"(?P<rate>[\s\S]+)",
+                r"(?P<rate>[\s\S]+)"
+                r"(?=\))",
                 ln,
             )
             rate = ureg.parse_expression(m.group("rate"))

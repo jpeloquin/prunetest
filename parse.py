@@ -142,7 +142,7 @@ class Block:
         self.elements = elements
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.elements!r}, {self.n!r})"
+        return f"{self.__class__.__name__}({self.elements!r}, {self.repeats!r})"
 
     def iter_expand(self):
         for e in self.elements:
@@ -677,6 +677,9 @@ def parse_protocol_section(lines):
             if m := match_instruction():
                 elements.append(m)
                 continue
+            if m := match_block():
+                elements.append(m)
+                continue
             if m := match_segment():
                 elements.append(m)
                 continue
@@ -684,7 +687,11 @@ def parse_protocol_section(lines):
         return Phase(name, elements)
 
     def match_block():
-        """Match block definition & advance line number"""
+        """Match block definition & advance line number
+
+        A block is a collection of repeated segments.
+
+        """
         nonlocal i
         if not lines[i].startswith("repeat"):
             return None
@@ -705,12 +712,7 @@ def parse_protocol_section(lines):
                 i += 1
                 elements.append(m)
                 continue
-            if m := match_phase():
-                i += 1
-                elements.append(m)
-                continue
             if m := match_segment():
-                i += 1
                 elements.append(m)
                 continue
             # If anything else other than whitespace or the above elements, the block
@@ -844,7 +846,6 @@ def parse_protocol_section(lines):
         if m := match_segment():
             # match_segment increments the line number
             protocol.append(m)
-            i += 1
             continue
         # Unrecognized
         warn(f"Did not recognize syntax of line: {lines[i]!r}")

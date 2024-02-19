@@ -664,7 +664,7 @@ def parse_protocol_section(lines):
         if not lines[i].startswith("phase"):
             return None
         # Phase
-        name = lines[i][len("phase") :].strip()
+        name = lines[i][len("phase") :].strip().removeprefix('"').removesuffix('"')
         elements = []
         i += 1
         while i < len(lines):

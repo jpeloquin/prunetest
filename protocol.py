@@ -388,40 +388,56 @@ class State:
 
     """
 
+    def __contains__(self, item):
+        return item in self.variables
+
     def __init__(self, values: Dict[Variable, Quantity]):
-        self.by_name = {v.name: q for v, q in values.items()}
-        self.by_var = {v: q for v, q in values.items()}  # copy
+        self.values = values
+        self._variables = {v.name: v for v in values.keys()}
 
     def __eq__(self, other):
         if isinstance(other, State):
-            return self.by_var == other.by_var
+            return self.values == other.values
         else:
             return NotImplemented  # fallback to other object
 
     def __getitem__(self, item):
         if isinstance(item, str):
-            return self.by_name[item]
+            var = self._variables[item]
         else:
-            return self.by_var[item]
+            var = item
+        return self.values[var]
+
+    def __setitem__(self, key, value):
+        """Set the value of one of the state's variables"""
+        if isinstance(key, str):
+            var = self._variables[key]
+        else:
+            var = key
+        self.values[var] = value
 
     def __repr__(self):
         nm = self.__class__.__name__
         s = f"{nm}({{"
-        for i, (var, val) in enumerate(self.by_var.items()):
+        for i, (var, val) in enumerate(self.values.items()):
             if i != 0:
-                s += f",\n  {' '*len(nm)}"
+                s += f",\n  {' ' * len(nm)}"
             s += f"{var}, {val}"
         s += "})"
         return s
 
     def __str__(self):
         s = "State:"
-        for var, val in self.by_var.items():
+        for var, val in self.values.items():
             s += f"\n  {var.name} [{var.units}] = {val}"
         return s
 
     def eval(self, parameters):
-        return State({k: evaluate(v, parameters) for k, v in self.by_var.items()})
+        return State({k: evaluate(v, parameters) for k, v in self.values.items()})
+
+    @property
+    def variables(self):
+        return set(self.values.keys())
 
 
 class SymbolicValue:
@@ -501,7 +517,7 @@ class Segment:
         ]
         prefix = f"{self.__class__.__name__}({{"
         suffix = "})"
-        s = prefix + f",\n{' '*len(prefix)}".join(parts) + suffix
+        s = prefix + f",\n{' ' * len(prefix)}".join(parts) + suffix
         return s
 
     @property
@@ -565,12 +581,11 @@ class Segment:
         # Resolve pseudotime variable's name
         if isinstance(xvar, str):
             xvar = self._transitions[xvar].variable
-        # Make the initial state concrete
-        # initial_state = evaluate(initial_state, parameters)
         # Find where we're going to interpolate the transitions
         try:
             t = self._transitions[xvar.name]
         except KeyError:
+            # TODO: Support using default rates
             raise ValueError(
                 f"Variable '{xvar.name}' is not controlled in this segment"
             )
@@ -616,37 +631,92 @@ class Segment:
             state[var] = None
         return State(state)
 
-    def target_state(self, initial_state={}, parameters={}, extra_vars=set()):
+    def target_state(self, initial_state={}, parameters={}, extra_vars=set(), rates={}):
         """Return target state for all variables
 
-        `target_state` is basically an `eval_state` that returns the segment's final
-        state.  As such, there is no need to specify an independent variable.  The
-        segment's initial state is required if the segment includes relative
-        transitions.  If all transitions are absolutely valued (independent of initial
-        state) an empty dict may be provided for the initial state.
+        `target_state` is similar to `eval_state`, but specifically returns the
+        segment's final state.  The chief advantage of `target_state` is that it does
+        not require an independent variable to be specified.
 
-        :param extra_vars: Variables that must be included in the target state as
+        :param initial_state: (Optional) The segment's initial state.  Required if
+        the segment includes relative transitions.  If all transitions are absolute
+        values (independent of initial state) the initial_state is unused and
+        unneccessary.
+
+        :param parameters: (Optional) Dictionary of the protocol's parameter values.  In a
+        .prune file, these are the contents of Definitions/Parameters.
+
+        :param extra_vars: (Optional) Variables that must be included in the target state as
         unconstrained variables if not constrained by the segment's target state. If
         any variable in `extra_vars` is already constrained by the segment, it will
         be calculated according to the segment's constraints as usual.
 
+        :param rates: (Optional) Default rates of change for parameters.  These will
+        be used to infer a variable's final state if its initial_state is known and
+        the segment does not specify a relative or absolute change.
+
         """
-        # Workaround for mutable default.  parameters probably won't be mutated here
-        # regardless, but it is passed to other functions so no guarantee.
-        if parameters == {}:
-            parameters = {}
-        state = {}
+        target_state = {}
+        # Calculate final state for variables with explicit targets
+        relative_vars = set()
         for var in self.constrained_vars:
-            t = self._transitions[var.name]
+            t = self.transitions[var.name]
             if isinstance(t.target, RelativeTarget):
-                state[t.variable] = t.target.eval(initial_state[t.variable], parameters)
+                # Relative target
+                if var in initial_state:
+                    target_state[t.variable] = t.target.eval(
+                        initial_state[t.variable], parameters
+                    )
+                    relative_vars.add(var)
             else:
                 # Absolute target
-                state[t.variable]: Quantity = evaluate(t.target, parameters)
-        free = self.unconstrained_vars | (set(extra_vars) - self.constrained_vars)
-        for var in free:
-            state[var] = None
-        return State(state)
+                target_state[t.variable]: Quantity = evaluate(t.target, parameters)
+        # Which of the remaining variables (without explicit targets) are rate constrained (have implicit target states
+        # due to having a default rate of change)?  For a dependent variable to be #
+        # rate constrained, it must have a known # initial value and default rate,
+        # and the rate's independent variable # must have a known change.
+        free_vars = (self.unconstrained_vars | set(extra_vars)) - set(
+            target_state.keys()
+        )
+        rate_used_for = set()
+        for y_var, (x_var, rate) in rates.items():
+            if (x_var not in free_vars) and (y_var not in free_vars):
+                # None of the variables used in the rate equation are unconstrained
+                continue
+            if (x_var in free_vars) and (y_var not in free_vars):
+                # Swap x and y so y is always the target we're calculating.  This is
+                # only ok as long as we're only using constant rates (linear interpolation).
+                x_var, y_var = y_var, x_var
+                rate = 1 / rate
+            # Calculate the change in the independent variable
+            if x_var in relative_vars:
+                Δx = self.transitions[x_var.name].target.value
+            elif x_var in initial_state and x_var in target_state:
+                Δx = target_state[x_var] - initial_state[x_var]
+            # Calculate the resulting change in the dependent variable
+            Δy = rate * Δx
+            # TODO: Figure out a better way of handling time or time-like variables.
+            #  Probably some variables should be tagged as monotonic (strictly
+            #  monotonic).  As an equation, an unsigned rate would be specified as
+            #  Δ.t = | Δ.y | / rate, which is a little odd.
+            if y_var.units == Quantity("s"):  # is monotonic
+                Δy = abs(Δy)
+            y_target = initial_state[y_var] + Δy
+            # Check if a rate has already been used to set this variable
+            if y_var in rate_used_for and y_target != target_state[y_var]:
+                raise ValueError(
+                    f"{var} is rate-constrained by multiple incompatible rates."
+                )
+            target_state[y_var] = y_target
+            rate_used_for.add(y_var)
+        # Add the free variables
+        free_vars = (self.unconstrained_vars | set(extra_vars)) - set(
+            target_state.keys()
+        )
+        for var in free_vars:
+            target_state[var] = None
+        target_state = State(target_state)
+        return target_state
 
 
 class Block:
@@ -711,7 +781,16 @@ class Protocol:
         elements,
         variables: Optional[Iterable[Variable]] = None,
         parameters: Optional[Iterable[Parameter]] = None,
+        default_rates: Optional[Dict[str, Tuple[Variable, Quantity]]] = None,
     ):
+        """Test protocol
+
+        :param default_rates: Map of variable name → default rate of change for that
+        parameter.  The default rate will be used to calculate segment duration if
+        time is not directly constrained.  The rate should have the variable's units
+        divided by time.
+
+        """
         # Make the protocol data immutable-ish
         self.initial_state = initial_state
         self.elements = tuple(elements)
@@ -774,6 +853,13 @@ class Protocol:
             if isinstance(e, Segment):
                 for var, instr in active.items():
                     instr.apply_to_segment(e)
+
+        # Default rates (and in the future, other default relations)
+        self.default_rates = {
+            self.variables[y_var]: (self.variables[x_var], rate)
+            for y_var, (x_var, rate) in default_rates.items()
+        }
+
         # Dictionaries to access phases by name.  Add dicts for segments and blocks
         # if they get names later.
         self.phase_dict = OrderedDict()
@@ -863,9 +949,17 @@ class Protocol:
         :param parameters: Dictionary of parameter values, used in place of the
         protocol's dictionary of default parameter values when evaluating expressions.
 
+        :param extra_vars: Variables that must be included in the calculated state
+        regardless of whether they are part of the applicable segment. Any variable
+        in `extra_vars` that is already constrained by the segment will be calculated
+        according to those constraints, exactly as if it were not in `extra_vars`.
+
         :returns: Sequence of states.  Each state is a map: variable name → value.
 
         """
+        # Not sure if extra_vars is still necessary; it may be that all protocol
+        # variables are now automatically carried over to each segment.
+
         # Resolve variable name
         if isinstance(variable, str):
             variable = self.variables[variable]
@@ -892,17 +986,25 @@ class Protocol:
             # provided in monotonically increasing order.
             while j < len(segments):
                 segment = segments[j]
+                # Starting point
                 t0 = last_state[variable]
+                # End point
                 next_state = segment.target_state(
                     initial_state=last_state,
                     parameters=parameters,
                     extra_vars=extra_vars,
+                    rates=self.default_rates,
                 )
                 t1 = next_state[variable]
-                # Check that the abscissa is defined
-                if t0 is None or t1 is None:
+                # Check that the starting value is defined
+                if t0 is None:
                     raise ValueError(
-                        f"Variable '{variable.name}' is free-floating and is therefore not a valid abscissa along which to evaluate state.  The abscissa must be strictly monotonically increasing."
+                        f"Variable '{variable.name}' is undefined at the start of the segment and is therefore not a valid independent variable along which to evaluate state."
+                    )
+                # Check that the ending value is defined
+                if t1 is None:
+                    raise ValueError(
+                        f"Variable '{variable.name}' is undefined at the end of the segment and is therefore not a valid independent variable along which to evaluate state."
                     )
                 if t0 < value < t1:
                     state = segment.eval_state(
@@ -922,7 +1024,7 @@ class Protocol:
                     continue
                 # Ensure all variables are present in the calculated state
                 for var in self.variables.values():
-                    if not var in state.by_var:
+                    if var not in state.variables:
                         raise InvariantViolation(
                             f"Variable '{var}' was defined in {Protocol} but not in a state calculated from that protocol."
                         )
@@ -939,16 +1041,36 @@ class Protocol:
         with a valid range [0, n] where n is the number of segments.  At t = 0,
         the state is the protocol's initial state.  At t = i, the state is the target
         state of the i'th segment.  At non-integer values of t, the returned state is
-        calculated by interpolation.  States the are uncalculable (e.g., outside the
-        range [0, n]) are returned as None.
+        calculated by linear interpolation.  States the are uncalculable (e.g.,
+        outside the range [0, n]) are returned as None.
 
         """
-        n = len(self.segments)
-        state = evaluate(self.initial_state, self.parameters)
-        values = {var: [state[var].to(var.units).m] for var in self.variables.values()}
+        # TODO: Support nonlinear changes
+        t = np.array(t)
+        n_pt = len(self.segments) + 1
+        # TODO: Add a dual-key dict for self.variables so we can use both the
+        #  variable's label and its object as keys
+        values = {var: [np.nan] for var in self.variables.values()}
+        # Initial state
+        initial_state = evaluate(self.initial_state, self.parameters)
+        for var in initial_state.variables:
+            value = initial_state[var]
+            values[var][0] = value.to(var.units).m
+        # Segments
         for s in self.segments:
-            state = s.target_state(state, self.parameters)
-            for var, value in state.by_var.items():
-                values[var].append(value.to(var.units).m if value is not None else np.nan)
-        out = {nm: np.interp(t, np.arange(n + 1), values[self.variables[nm]]) for nm in self.variables}
+            target_state = s.target_state(
+                initial_state,
+                self.parameters,
+                extra_vars=self.variables.values(),
+                rates=self.default_rates,
+            )
+            for var, value in target_state.values.items():
+                values[var].append(
+                    value.to(var.units).m if value is not None else np.nan
+                )
+            initial_state = target_state
+        out = {
+            nm: np.interp(t, np.arange(n_pt), values[self.variables[nm]])
+            for nm in self.variables
+        }
         return out

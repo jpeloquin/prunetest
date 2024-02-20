@@ -910,15 +910,16 @@ def read_default_rates(lines):
     for ln in lines:
         if not is_ws(ln):
             m = re.match(
-                r"(?P<var>\w+)\((\w+)\)"
+                r"(?P<y_var>\w+)\((\w+)\)"
                 r"\s*=\s*"
-                r"\w+\(\w+,\s*"
+                r"linear\((?P<x_var>\w+),"
+                r"\s*"
                 r"(?P<rate>[\s\S]+)"
                 r"(?=\))",
                 ln,
             )
             rate = ureg.parse_expression(m.group("rate"))
-            rates[m.group("var")] = rate
+            rates[m.group("y_var")] = (m.group("x_var"), rate)
     return rates
 
 
@@ -993,4 +994,5 @@ def read_prune(p) -> protocol.Protocol:
         [e.read(variables, parameters) for e in p_protocol],
         variables.values(),
         parameters.values(),
+        defaults["rates"],
     )

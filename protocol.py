@@ -1,10 +1,12 @@
 # Base packages
+from copy import copy
 from numbers import Number
 import operator
-from typing import Dict, Iterable, List, Optional, Sequence, Union
-from collections import OrderedDict, abc
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Type, Union
+from collections import OrderedDict, abc, defaultdict, namedtuple
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize
 
 from .units import Unit, Quantity
@@ -40,26 +42,10 @@ def evaluate(obj, parameters=None):
     return obj
 
 
-def iter_expanded(elements):
-    """Return iterator over instructions and segments, expanding phases and blocks"""
-    for e in elements:
-        if isinstance(e, Segment) or isinstance(e, Instruction):
-            yield e
-        elif hasattr(e, "iter_expanded"):
-            for e2 in e.iter_expanded():
-                yield e2
-        elif hasattr(e, "segments"):
-            for e2 in e.segments:
-                yield e2
-
-
-def label_data(protocol, data, control_var):
+def label_data(protocol: "Protocol", data, control_var):
     """Label a table of test data based on a protocol.
 
-    The protocol is defined as a table of test segments with at least a
-    column named "Time [s]" and a column with name == `control_var`.
-
-    Warning: `protocol` will be mutated to update its initial state to
+    *Warning*: `protocol` will be mutated to update its initial state to
     match the control channel's data.  This is necessary for fitting of
     the first segment.
 
@@ -68,24 +54,22 @@ def label_data(protocol, data, control_var):
 
     """
     # TODO: ensure units of data match units of reference state
-    state = protocol.initial_state.end_state
+    state = protocol.initial_state
     state[control_var] = (
-        data[control_var].iloc[0] * protocol.initial_state.end_state[control_var].units
+        data[control_var].iloc[0] * protocol.initial_state[control_var].units
     )
-    protocol.initial_state = InitialState(state)
+    # TODO: Add method to set initial state.  Or provide a better way to provide a
+    #  concrete initial state, which would allow .prune files to not have a default
+    #  initialization.
+    protocol.initial_state = state
     protocol.segments[0].previous = protocol.initial_state
-    protocol_change_points = np.cumsum(
-        [0] + [seg.duration for seg in protocol.segments]
-    )
-    # TODO: Standardize variable's units to the unit declaration under
-    # Channels section, rather than the first unit encountered.
-    unit = protocol.initial_state[control_var].units
-    protocol_values = [protocol.initial_state[control_var].m] + [
-        seg.end_state[control_var].to(unit).m for seg in protocol.segments
-    ]
-    tab_protocol = {"Time [s]": protocol_change_points, control_var: protocol_values}
+    protocol_values = protocol.eval_pt(range(len(protocol.segments) + 1))
+    tab_protocol = {
+        "Time [s]": (protocol_values["t"] * protocol.variables["t"].units).to("s").m,
+        control_var: protocol_values[control_var],
+    }
     time_points = tab_protocol["Time [s]"].copy()
-    # ↑ times of change points
+
     def f(p):
         """Fit quality metric for fitting origin point."""
         # Time points for comparison are drawn from the protocol rather
@@ -157,6 +141,8 @@ def label_data(protocol, data, control_var):
             p0 = np.hstack([[0], np.diff(time_points[i : i + 3])])
         else:
             p0 = np.diff(tab_protocol["Time [s]"][i - 1 : i + 2])
+        if any(p0[1:] == 0):
+            raise ValueError(f"Segment {i + 1} has zero duration.")
         # print("\ni = {}".format(i))
         bounds = [(0, np.inf) for x in p0]
         result = minimize(f, p0, method="L-BFGS-B", bounds=bounds)
@@ -295,65 +281,138 @@ class Variable:
         return hash(self.name)
 
 
+LabeledSegment = namedtuple("LabeledSegment", ["idx", "times", "initial", "final"])
+
+LabeledCycle = namedtuple(
+    "LabeledCycle", ["idx", "times", "initial", "final", "segments"]
+)
+
+LabeledBlock = namedtuple(
+    "LabeledBlock", ["idx", "times", "initial", "final", "cycles"]
+)
+
+LabeledPhase = namedtuple(
+    "LabeledBlock", ["name", "times", "initial", "final", "segments"]
+)
+
+
 class ProtocolData:
-    def __init__(self, data, t, protocol, change_points):
+    def __init__(self, data, t, protocol: "Protocol", change_points):
         """Construct an object to store protocol labels for a dataset.
 
-        t := array of data point times in (units: seconds).
-
-        data := table or array of data values.  Must be sliceable; e.g.,
+        :param data:  Table or array of data values.  Must be sliceable; e.g.,
         data[i:j].  Usually a pandas.DataFrame object.
 
-        change_points := array of time points (units: seconds) in
-        ascending order, specifying each change point in the protocol.
-        The length of `change_points` is equal to the number of segments
-        + 1.  (The start of the test counts as a change in control and
-        thus a change point.)
+        :param change_points: Array of time points (units: seconds) in ascending
+        order, specifying each change point in the protocol. The length of
+        `change_points` is equal to the number of segments + 1.  (The start of the
+        test counts as a change in control and thus a change point.)
 
         """
+        self.protocol = protocol
         self.change_points = change_points
 
-        for k in [
-            "segments",
-            "blocks",
-            "phases",
-            "segment_dict",
-            "block_dict",
-            "phase_dict",
-            "phase_of_block",
-            "phase_of_segment",
-        ]:
-            self.__dict__[k] = protocol.__dict__[k]
-
-        self.data_times = t
-        self.data = data
+        self.data = copy(data)
         self.initial_state = protocol.initial_state
 
-        for i in range(len(protocol.segments)):
-            # i = index of first change point for current segment
-            # j = index of second change point for current segment
-            j = i + 1
-            t0 = change_points[i]
-            t1 = change_points[j]
-            m = np.logical_and(t0 < self.data_times, self.data_times <= t1)
-            self.segments[i].data = self.data[m]
-            self.segments[i].times = [t0, t1]
+        # Calculate the times and nominal states of each element for easy access.
+        # Storing this information and providing a convenient interface for it is
+        # somewhat complicated by the fact that the Protocol does not guarantee that
+        # each segment is represented by a unique object.  For example, a block may
+        # only store one repetition's worth of segment objects.  We can deal with
+        # segments by copying them.  However, phases and blocks will still access the
+        # original Protocol's segments, so we have to recreate all such elements here as
+        # concrete data.
+        phases = defaultdict(list)
+        blocks = defaultdict(list)
+        self.segments = []
+        self.states = [protocol.initial_state]
+        for i, segment in enumerate(protocol.segments):
+            segment = copy(segment)
+            target_state = segment.target_state(
+                self.states[-1],
+                protocol.parameters,
+                protocol.variables.values(),
+                protocol.default_rates,
+            )
+            times = (change_points[i], change_points[i + 1])
+            self.segments.append(
+                LabeledSegment(i, times, self.states[-1], target_state)
+            )
+            self.states.append(target_state)
+            if segment.phase is not None:
+                phases[segment.phase.name].append(self.segments[i])
+            if segment.block is not None:
+                blocks[segment.block].append(self.segments[i])
+        # Consolidate block data, with cycles
+        protocol_blocks = [
+            e
+            for e in iter_expanded(protocol.elements, expand=(Phase,))
+            if isinstance(e, Block)
+        ]
+        self.blocks = []
+        for idx, (block_segs, protocol_block) in enumerate(
+            zip(blocks.values(), protocol_blocks)
+        ):
+            cycles = []
+            current_cycle = []
+            for i, segment in enumerate(block_segs):
+                current_cycle.append(segment)
+                if current_cycle and (i + 1) % protocol_block.n == 0:
+                    cycles.append(
+                        LabeledCycle(
+                            len(cycles),
+                            (current_cycle[0].times[0], current_cycle[-1].times[-1]),
+                            current_cycle[0].initial,
+                            current_cycle[-1].final,
+                            current_cycle,
+                        )
+                    )
+                    current_cycle = []
 
+            i = block_segs[0].idx
+            j = block_segs[-1].idx
+            self.blocks.append(
+                LabeledBlock(
+                    idx,
+                    (self.segments[i].times[0], self.segments[j].times[-1]),
+                    self.segments[i].initial,
+                    self.segments[j].final,
+                    cycles,
+                )
+            )
+        # Consolidate phase data
+        self.phases = {}
+        for nm, phase_segs in phases.items():
+            i = phase_segs[0].idx
+            j = phase_segs[-1].idx
+            self.phases[nm] = LabeledPhase(
+                nm,
+                (self.segments[i].times[0], self.segments[j].times[-1]),
+                self.segments[i].initial,
+                self.segments[j].final,
+                [seg.idx for seg in phase_segs],
+            )
 
-# TODO: Delete?
-class InitialState:
-    def __init__(self, reference_state):
-        self._state = reference_state
-        self.end_state = self._state
-        self.duration = 0
-
-    def evaluate(self, t):
-        if t != 0:
-            raise ValueError("t = {} outside of segment bounds.".format(t))
-        return self.end_state
-
-    def __getitem__(self, k):
-        return self._state[k]
+        # Tag the data with segment, block, and phase membership
+        self.data["Segment"] = None
+        self.data["Block"] = None
+        self.data["Phase"] = None
+        for segment in self.segments:
+            t0, t1 = segment.times
+            if i == 0:
+                m = np.logical_and(t0 <= t, t <= t1)
+            else:
+                m = np.logical_and(t0 < t, t <= t1)
+            self.data.loc[m, "Segment"] = segment.idx
+        for block_segs in self.blocks:
+            t0, t1 = block_segs.times
+            m = np.logical_and(t0 < t, t <= t1)
+            self.data.loc[m, "Block"] = block_segs.idx
+        for name, phase_segs in self.phases.items():
+            t0, t1 = phase_segs.times
+            m = np.logical_and(t0 < t, t <= t1)
+            self.data.loc[m, "Phase"] = phase_segs.name
 
 
 class Instruction:
@@ -510,6 +569,8 @@ class Segment:
             t.variable.name: t for t in transitions
         }
         self._free = {v.name: v for v in set(extra_vars) - self.constrained_vars}
+        self.phase = None  # A Segment may belong to only one Phase
+        self.block = None  # A Segment may belong to only one Block
 
     def __repr__(self):
         parts = [f"{self._transitions[v.name]}" for v in self.constrained_vars] + [
@@ -720,40 +781,53 @@ class Segment:
 
 
 class Block:
-    def __init__(self, cycle, n):
-        self.cycle = cycle
-        self.n = n
+    def __init__(self, cycle, iterations):
+        # Many consumers will expect different segments to be represented by
+        # different objects, but Block only stores repetition's worth of segments.
+        self._cycle = cycle
+        for seg in cycle:
+            seg.block = self
+        self.iterations = iterations
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.cycle}, {self.n})"
+        return f"{self.__class__.__name__}({self._cycle}, {self.iterations})"
 
     def __iter__(self):
         """Return iterator over segments with cycle repeats"""
         iterator = (
-            self.cycle[i] for ncycles in range(self.n) for i in range(len(self.cycle))
+            self._cycle[i]
+            for _ in range(self.iterations)
+            for i in range(len(self._cycle))
         )
         return iterator
 
     @property
     def cycles(self):
-        return tuple(self.cycle for ncycles in range(self.n))
+        return tuple(self._cycle for ncycles in range(self.iterations))
+
+    @property
+    def n(self):
+        return len(self._cycle)
 
     @property
     def segments(self):
-        return tuple(iter(self))
+        segs = tuple(iter(self))
+        return segs
 
 
 class Phase:
     def __init__(self, name, elements):
         self.name = name
+        for e in elements:
+            e.phase = self
         self.elements = elements
 
     def __repr__(self):
         return f"{self.__class__}({self.name}, {self.elements})"
 
-    def iter_expanded(self):
-        """Return iterator over instructions and segments, expanding phases and blocks"""
-        for e in iter_expanded(self.elements):
+    def iter_expanded(self, expand=(Block,)):
+        """Return iterator over instructions and segments, expanding blocks"""
+        for e in iter_expanded(self.elements, expand):
             yield e
 
     @property
@@ -761,9 +835,12 @@ class Phase:
         segments = []
         for e in self.elements:
             if isinstance(e, Segment):
+                e.phase = self
                 segments.append(e)
             elif isinstance(e, Block):
-                segments.append(seg for seg in e)
+                for seg in e:
+                    seg.phase = self
+                    segments.append(seg)
             elif isinstance(e, Instruction):
                 # Keyword command, not really supported yet
                 continue
@@ -891,9 +968,9 @@ class Protocol:
             s += f"  {e}\n"
         return s
 
-    def iter_expanded(self):
+    def iter_expanded(self, expand=(Phase, Block)):
         """Return iterator over instructions and segments, expanding phases and blocks"""
-        for e in iter_expanded(self.elements):
+        for e in iter_expanded(self.elements, expand):
             yield e
 
     # Perhaps this should be cached for performance?  It would help if the protocol were
@@ -1074,3 +1151,16 @@ class Protocol:
             for nm in self.variables
         }
         return out
+
+
+def iter_expanded(elements, expand: Iterable[Type] = (Phase, Block)):
+    """Return iterator over instructions and segments, expanding phases and blocks"""
+    for e in elements:
+        if e.__class__ not in expand:
+            yield e
+        elif hasattr(e, "iter_expanded"):
+            for e2 in e.iter_expanded(expand=expand):
+                yield e2
+        elif hasattr(e, "segments"):
+            for e2 in e.segments:
+                yield e2
